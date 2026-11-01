@@ -2,14 +2,6 @@ package com.local.pocketarchive.data.local
 
 import androidx.room.TypeConverter
 
-enum class CaptureStatus {
-    PENDING,
-    CAPTURING_DOM,
-    SUMMARIZING_AI,
-    COMPLETED,
-    FAILED
-}
-
 class CaptureStatusConverter {
     @TypeConverter
     fun fromStatus(status: CaptureStatus): String = status.name
@@ -17,4 +9,12 @@ class CaptureStatusConverter {
     @TypeConverter
     fun toStatus(value: String): CaptureStatus =
         runCatching { CaptureStatus.valueOf(value) }.getOrDefault(CaptureStatus.FAILED)
+
+    @TypeConverter
+    fun fromStringList(list: List<String>?): String =
+        list?.joinToString(",") ?: ""
+
+    @TypeConverter
+    fun toStringList(value: String?): List<String> =
+        if (value.isNullOrBlank()) emptyList() else value.split(",").map { it.trim() }.filter { it.isNotEmpty() }
 }

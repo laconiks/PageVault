@@ -6,9 +6,11 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
+typealias AppDatabase = ArchiveDatabase
+
 @Database(
-    entities = [ArchivedPage::class, ArchivedPageFts::class],
-    version = 1,
+    entities = [ArchivedPage::class, ArchivedPageFts::class, RssSubscription::class],
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(CaptureStatusConverter::class)

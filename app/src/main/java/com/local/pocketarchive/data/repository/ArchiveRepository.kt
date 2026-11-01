@@ -1,11 +1,11 @@
 package com.local.pocketarchive.data.repository
 
+import com.local.pocketarchive.ai.AiEdgeModel
 import com.local.pocketarchive.ai.LocalAiEdgeProcessor
 import com.local.pocketarchive.capture.WebArchiveCaptureManager
 import com.local.pocketarchive.data.local.ArchiveDao
 import com.local.pocketarchive.data.local.ArchivedPage
 import com.local.pocketarchive.data.local.CaptureStatus
-import com.local.pocketarchive.data.local.PageMetadata
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 import java.util.UUID
@@ -29,64 +29,81 @@ class ArchiveRepository(
 
     suspend fun getArchiveByUuid(uuid: String): ArchivedPage? = archiveDao.getByUuid(uuid)
 
-    suspend fun captureAndIndexUrl(rawUrl: String): Result<ArchivedPage> = runCatching {
+    suspend fun captureAndIndexUrl(
+        rawUrl: String,
+        spoofCrawler: Boolean = true,
+        disableJs: Boolean = false,
+        preferredModel: AiEdgeModel = aiProcessor.currentModel
+    ): Result<ArchivedPage> = runCatching {
         val normalizedUrl = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
             rawUrl.trim()
         } else {
             "https://${rawUrl.trim()}"
         }
-        val uuid = UUID.randomUUID().toString()
-        val initialRowId = archiveDao.insert(
-            ArchivedPage(
-                uuid = uuid,
-                originalUrl = normalizedUrl,
-                title = normalizedUrl,
-                mhtmlFilePath = null,
-                screenshotFilePath = null,
-                thumbnailFilePath = null,
-                status = CaptureStatus.CAPTURING_DOM
-            )
-        )
-        val initialEntity = archiveDao.getByUuid(uuid)!!.copy(rowId = initialRowId)
 
-        val rawCapture = captureManager.captureUrl(uuid, normalizedUrl).getOrElse { error ->
+        val previousVersion = archiveDao.getLatestByUrl(normalizedUrl)
+        val parentUuid = previousVersion?.parentUuid ?: previousVersion?.uuid
+        val versionNumber = if (previousVersion != null) previousVersion.versionNumber + 1 else 1
+
+        val uuid = UUID.randomUUID().toString()
+        val startEpochMs = System.currentTimeMillis()
+
+        val initialEntity = ArchivedPage(
+            uuid = uuid,
+            originalUrl = normalizedUrl,
+            title = normalizedUrl,
+            parentUuid = parentUuid,
+            versionNumber = versionNumber,
+            status = CaptureStatus.PENDING
+        )
+        archiveDao.insert(initialEntity)
+
+        val rawCapture = captureManager.captureUrl(uuid, normalizedUrl, spoofCrawler, disableJs).getOrElse { error ->
             val failed = initialEntity.copy(
                 status = CaptureStatus.FAILED,
-                errorMessage = error.localizedMessage ?: "Capture timed out"
+                aiSummary = "Capture failed: ${error.localizedMessage ?: "Timeout"}"
             )
             archiveDao.update(failed)
             throw error
         }
 
-        val summarizingEntity = initialEntity.copy(
+        val diffSummary = if (previousVersion != null) {
+            aiProcessor.compareArticleVersions(
+                oldTitle = previousVersion.title,
+                oldText = previousVersion.extractedTextSummary,
+                newTitle = rawCapture.resolvedTitle,
+                newText = rawCapture.extractedDomText
+            )
+        } else ""
+
+        val ocrText = aiProcessor.extractOcrFromScreenshot(rawCapture.fullScreenshotFile.absolutePath)
+        val aiResult = aiProcessor.summarizeAndTag(
             title = rawCapture.resolvedTitle,
+            rawText = rawCapture.extractedDomText,
+            ocrText = ocrText
+        )
+
+        val durationMs = System.currentTimeMillis() - startEpochMs
+
+        val completedEntity = initialEntity.copy(
+            title = rawCapture.resolvedTitle,
+            siteName = rawCapture.siteName.orEmpty(),
+            author = rawCapture.author.orEmpty(),
             mhtmlFilePath = rawCapture.mhtmlFile.absolutePath,
             screenshotFilePath = rawCapture.fullScreenshotFile.absolutePath,
-            thumbnailFilePath = rawCapture.thumbnailFile.absolutePath,
-            status = CaptureStatus.SUMMARIZING_AI,
-            metadata = PageMetadata(
-                siteName = rawCapture.siteName,
-                author = rawCapture.author,
-                wordCount = rawCapture.wordCount,
-                httpStatusCode = 200,
-                extractedTextSnippet = rawCapture.extractedDomText.take(2000)
-            )
-        )
-        archiveDao.update(summarizingEntity)
-
-        val aiResult = aiProcessor.enrichCapture(
-            title = rawCapture.resolvedTitle,
-            extractedDomText = rawCapture.extractedDomText,
-            screenshotFile = rawCapture.fullScreenshotFile
-        )
-
-        val completedEntity = summarizingEntity.copy(
-            summary = aiResult.summary,
-            tagsCsv = aiResult.tagsCsv,
-            ocrText = aiResult.ocrText,
+            extractedTextSummary = rawCapture.extractedDomText.take(3000),
+            aiSummary = aiResult.summary,
+            aiTags = aiResult.tags,
+            ocrText = ocrText,
+            captureDurationMs = durationMs,
+            parentUuid = parentUuid,
+            versionNumber = versionNumber,
+            changeDiffSummary = diffSummary,
+            aiModelUsed = aiResult.modelLabel,
             status = CaptureStatus.COMPLETED
         )
-        archiveDao.update(completedEntity)
+        archiveDao.upsertPage(completedEntity)
+        archiveDao.rebuildFts()
         completedEntity
     }
 

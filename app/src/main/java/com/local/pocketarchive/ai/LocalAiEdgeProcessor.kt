@@ -1,7 +1,7 @@
 package com.local.pocketarchive.ai
 
 import android.content.Context
-import android.net.Uri
+import android.graphics.BitmapFactory
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -11,10 +11,52 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 
+data class AiAnalysisResult(
+    val summary: String,
+    val tags: List<String>,
+    val modelLabel: String
+)
+
+data class EdgeModelOption(
+    val id: String,
+    val displayName: String,
+    val recommendationBadge: String,
+    val filePath: String?,
+    val isAvailableOnDisk: Boolean
+)
+
+enum class AiEdgeModel(
+    val id: String,
+    val displayName: String,
+    val relativePath: String,
+    val description: String
+) {
+    GEMMA_2B(
+        "gemma-2b",
+        "Gemma 2B IT (Edge)",
+        "models/gemma_edge.bin",
+        "Google AI Edge 2B parameter instruction-tuned model."
+    ),
+    GEMMA_2_2B(
+        "gemma2-2b",
+        "Gemma 2 2B IT",
+        "models/gemma2_2b.bin",
+        "Next-generation compact language model from Google."
+    ),
+    LOCAL_HEURISTIC(
+        "local-heuristic",
+        "Local Heuristic Fallback",
+        "",
+        "Fast zero-dependency extractive summary & TF-IDF keywords."
+    )
+}
+
 data class AiEnrichmentResult(
     val summary: String,
+    val tags: List<String>,
     val tagsCsv: String,
-    val ocrText: String
+    val ocrText: String,
+    val modelUsed: String
 )
 
 class LocalAiEdgeProcessor(private val context: Context) {
@@ -23,117 +65,277 @@ class LocalAiEdgeProcessor(private val context: Context) {
         const val RELATIVE_MODEL_PATH = "models/gemma_edge.bin"
     }
 
-    private val ocrRecognizer by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val prefs = context.getSharedPreferences("pagevault_ai_prefs", Context.MODE_PRIVATE)
+    private val textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+    var currentModel: AiEdgeModel
+        get() {
+            val id = getSelectedModelId()
+            return when (id) {
+                "gemma3n_2b" -> AiEdgeModel.GEMMA_2B
+                "llama32_3b" -> AiEdgeModel.GEMMA_2_2B
+                "extractive_deterministic" -> AiEdgeModel.LOCAL_HEURISTIC
+                else -> AiEdgeModel.GEMMA_2B
+            }
+        }
+        set(value) {
+            val id = when (value) {
+                AiEdgeModel.GEMMA_2B -> "gemma3n_2b"
+                AiEdgeModel.GEMMA_2_2B -> "llama32_3b"
+                AiEdgeModel.LOCAL_HEURISTIC -> "extractive_deterministic"
+            }
+            setSelectedModel(id)
+        }
+
+    fun isFirstLaunchOnboardingNeeded(): Boolean =
+        !prefs.getBoolean("edge_onboarding_shown", false)
+
+    fun markOnboardingComplete() {
+        prefs.edit().putBoolean("edge_onboarding_shown", true).apply()
+    }
+
+    fun getSelectedModelId(): String =
+        prefs.getString("selected_model_id", "gemma3n_2b") ?: "gemma3n_2b"
+
+    fun getSelectedModelCustomPath(): String =
+        prefs.getString("custom_model_path", "") ?: ""
+
+    fun setSelectedModel(modelId: String, customPath: String? = null) {
+        prefs.edit().apply {
+            putString("selected_model_id", modelId)
+            if (customPath != null) putString("custom_model_path", customPath)
+            apply()
+        }
+    }
+
+    fun getAvailableEdgeModels(): List<EdgeModelOption> {
+        val customPath = getSelectedModelCustomPath()
+        val candidateDirs = listOf(
+            File(context.filesDir, "models"),
+            File("/sdcard/Download"),
+            File("/data/local/tmp/llm")
+        )
+
+        fun findModelFile(keyword: String): File? {
+            if (customPath.isNotBlank() && File(customPath).exists() && customPath.contains(keyword, true)) {
+                return File(customPath)
+            }
+            for (dir in candidateDirs) {
+                val match = dir.listFiles()?.firstOrNull { file ->
+                    file.isFile && (file.name.endsWith(".task") || file.name.endsWith(".litertlm") || file.name.endsWith(".bin")) &&
+                        file.name.contains(keyword, ignoreCase = true)
+                }
+                if (match != null) return match
+            }
+            return null
+        }
+
+        val gemmaFile = findModelFile("gemma")
+        val qwenFile = findModelFile("qwen")
+        val llamaFile = findModelFile("llama")
+        val customFile = customPath.takeIf { it.isNotBlank() && File(it).exists() }?.let { File(it) }
+
+        return listOf(
+            EdgeModelOption(
+                id = "gemma3n_2b",
+                displayName = "Gemma 3n E2B / Gemma 2B (LiteRT .task)",
+                recommendationBadge = "★ RECOMMENDED FOR SUMMARIES & DIFFS",
+                filePath = gemmaFile?.absolutePath,
+                isAvailableOnDisk = gemmaFile != null
+            ),
+            EdgeModelOption(
+                id = "qwen25_15b",
+                displayName = "Qwen 2.5 1.5B Instruct (AI Edge Gallery)",
+                recommendationBadge = "⚡ FASTEST FOR KEYWORD & WORD MAPPING",
+                filePath = qwenFile?.absolutePath,
+                isAvailableOnDisk = qwenFile != null
+            ),
+            EdgeModelOption(
+                id = "llama32_3b",
+                displayName = "Llama 3.2 3B Quantized (Deep Research)",
+                recommendationBadge = "🧠 BEST FOR LONG POLICY & PRESS RELEASES",
+                filePath = llamaFile?.absolutePath,
+                isAvailableOnDisk = llamaFile != null
+            ),
+            EdgeModelOption(
+                id = "custom_path",
+                displayName = "Custom Local Model File (.task / .litertlm)",
+                recommendationBadge = if (customFile != null) "Loaded: ${customFile.name}" else "Set path in AI Edge settings",
+                filePath = customFile?.absolutePath,
+                isAvailableOnDisk = customFile != null
+            ),
+            EdgeModelOption(
+                id = "extractive_deterministic",
+                displayName = "Zero-RAM Deterministic Extractive Engine",
+                recommendationBadge = "INSTANT BATTERY-SAVER (BUILT-IN)",
+                filePath = "built_in",
+                isAvailableOnDisk = true
+            )
+        )
+    }
+
+    suspend fun extractOcrFromScreenshot(screenshotPath: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            val file = File(screenshotPath)
+            if (!file.exists()) return@withContext ""
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return@withContext ""
+            val image = InputImage.fromBitmap(bitmap, 0)
+            val result = textRecognizer.process(image).await()
+            result.text.take(4000)
+        }.getOrDefault("")
+    }
+
+    suspend fun summarizeAndTag(
+        title: String,
+        rawText: String,
+        ocrText: String
+    ): AiAnalysisResult = withContext(Dispatchers.Default) {
+        val combined = "$title. $rawText$ocrText".trim()
+        val selectedId = getSelectedModelId()
+        val models = getAvailableEdgeModels()
+        val chosenOption = models.find { it.id == selectedId } ?: models.first()
+
+        if (selectedId != "extractive_deterministic" && chosenOption.filePath != null && chosenOption.filePath != "built_in") {
+            val llmResult = runCatching {
+                val options = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath(chosenOption.filePath)
+                    .setMaxTokens(256)
+                    .build()
+                LlmInference.createFromOptions(context, options).use { llm ->
+                    val prompt = "Summarize this article concisely in 3 sentences and list 4 keywords:\n${combined.take(2500)}"
+                    llm.generateResponse(prompt)
+                }
+            }.getOrNull()
+
+            if (!llmResult.isNullOrBlank()) {
+                val tags = extractTopKeywords(combined)
+                return@withContext AiAnalysisResult(
+                    summary = llmResult.trim(),
+                    tags = tags,
+                    modelLabel = chosenOption.displayName.substringBefore(" (")
+                )
+            }
+        }
+
+        // Deterministic local fallback when model file is not yet downloaded
+        val sentences = rawText
+            .split(Regex("(?<=[.!?])\\s+"))
+            .map { it.trim() }
+            .filter { it.length > 45 }
+            .take(3)
+
+        val fallbackSummary = if (sentences.isNotEmpty()) {
+            sentences.joinToString(" ")
+        } else {
+            ocrText.take(320).ifBlank { "Captured offline snapshot of $title." }
+        }
+
+        val activeLabel = if (selectedId == "extractive_deterministic") {
+            "Built-in Extractive"
+        } else {
+            "${chosenOption.displayName.substringBefore(" (")} (Heuristic Fallback)"
+        }
+
+        AiAnalysisResult(
+            summary = fallbackSummary.take(500),
+            tags = extractTopKeywords(combined),
+            modelLabel = activeLabel
+        )
+    }
+
+    suspend fun compareArticleVersions(
+        oldTitle: String,
+        oldText: String,
+        newTitle: String,
+        newText: String
+    ): String = withContext(Dispatchers.Default) {
+        val oldSentences = oldText.split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.length > 25 }.toSet()
+        val newSentences = newText.split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.length > 25 }.toSet()
+
+        val added = (newSentences - oldSentences).take(3)
+        val removed = (oldSentences - newSentences).take(2)
+
+        val oldWords = oldText.split(Regex("\\s+")).filter { it.isNotBlank() }.size
+        val newWords = newText.split(Regex("\\s+")).filter { it.isNotBlank() }.size
+        val deltaWords = newWords - oldWords
+
+        buildString {
+            if (oldTitle.trim() != newTitle.trim()) {
+                append("• Headline Changed: \"$oldTitle\" → \"$newTitle\"\n")
+            }
+            append("• Word Count Shift: $oldWords → $newWords words (${if (deltaWords >= 0) "+$deltaWords" else "$deltaWords"})\n")
+            if (added.isEmpty() && removed.isEmpty()) {
+                append("• Content Verification: Body text is 100% identical to previous pull.")
+            } else {
+                if (added.isNotEmpty()) {
+                    append("• New/Updated Passages (${added.size}): \"${added.first().take(140)}...\"\n")
+                }
+                if (removed.isNotEmpty()) {
+                    append("• Removed/Edited Passages (${removed.size}): \"${removed.first().take(120)}...\"")
+                }
+            }
+        }.trim()
     }
 
     suspend fun enrichCapture(
         title: String,
         extractedDomText: String,
-        screenshotFile: File
+        screenshotFile: File,
+        preferredModel: AiEdgeModel = currentModel
     ): AiEnrichmentResult = withContext(Dispatchers.Default) {
-        val ocrText = runOcrOnScreenshot(screenshotFile)
-        val combinedCorpus = "$title. $extractedDomText $ocrText".trim()
-
-        val modelFile = File(context.filesDir, RELATIVE_MODEL_PATH)
-        if (modelFile.exists() && modelFile.length() > 1024L) {
-            runCatching {
-                runMediaPipeLlmInference(modelFile.absolutePath, title, combinedCorpus, ocrText)
-            }.getOrElse {
-                runExtractiveFallback(title, combinedCorpus, ocrText)
-            }
-        } else {
-            runExtractiveFallback(title, combinedCorpus, ocrText)
-        }
+        val ocrText = extractOcrFromScreenshot(screenshotFile.absolutePath)
+        val analysis = summarizeAndTag(title, extractedDomText, ocrText)
+        AiEnrichmentResult(
+            summary = analysis.summary,
+            tags = analysis.tags,
+            tagsCsv = analysis.tags.joinToString(", "),
+            ocrText = ocrText,
+            modelUsed = analysis.modelLabel
+        )
     }
 
-    private fun runMediaPipeLlmInference(
-        modelPath: String,
-        title: String,
-        corpus: String,
-        ocrText: String
-    ): AiEnrichmentResult {
-        val options = LlmInference.LlmInferenceOptions.builder()
-            .setModelPath(modelPath)
-            .setMaxTokens(256)
-            .build()
+    fun computeArticleDiff(oldText: String, newText: String): String {
+        if (oldText.isBlank() || newText.isBlank()) return ""
+        val oldWords = oldText.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val newWords = newText.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val wordDelta = newWords.size - oldWords.size
+        val wordDeltaStr = if (wordDelta >= 0) "+$wordDelta words" else "$wordDelta words"
 
-        LlmInference.createFromOptions(context, options).use { llm ->
-            val truncatedInput = corpus.take(3500)
-            val prompt = """
-                Summarize the following archived webpage in 2 concise bullet points, then on a new line starting with TAGS: list 5 lowercase comma-separated topic tags.
-                Title: $title
-                Content: $truncatedInput
-            """.trimIndent()
-
-            val rawResponse = llm.generateResponse(prompt).trim()
-            val tagsLine = rawResponse.lines().firstOrNull { it.startsWith("TAGS:", ignoreCase = true) }
-            val tagsCsv = tagsLine
-                ?.substringAfter(":")
-                ?.split(",")
-                ?.map { it.trim().lowercase() }
-                ?.filter { it.isNotBlank() }
-                ?.take(5)
-                ?.joinToString(", ")
-                ?: extractTopKeywords(corpus)
-
-            val cleanSummary = rawResponse.lines()
-                .filterNot { it.startsWith("TAGS:", ignoreCase = true) }
-                .joinToString("\n")
-                .trim()
-                .ifBlank { "Offline snapshot captured." }
-
-            return AiEnrichmentResult(
-                summary = cleanSummary,
-                tagsCsv = tagsCsv,
-                ocrText = ocrText.take(2000)
-            )
-        }
-    }
-
-    private fun runExtractiveFallback(
-        title: String,
-        corpus: String,
-        ocrText: String
-    ): AiEnrichmentResult {
-        val sentences = corpus.split(Regex("(?<=[.!?])\\s+"))
+        val oldSentences = oldText.split(Regex("(?<=[.!?])\\s+"))
             .map { it.trim() }
-            .filter { it.length in 40..220 }
-            .take(2)
-        val summary = if (sentences.isNotEmpty()) {
-            sentences.joinToString(" ")
+            .filter { it.length > 25 }
+            .toSet()
+        val newSentences = newText.split(Regex("(?<=[.!?])\\s+"))
+            .map { it.trim() }
+            .filter { it.length > 25 }
+
+        val addedSentences = newSentences.filter { it !in oldSentences }
+        val diffDetail = if (addedSentences.isNotEmpty()) {
+            val sample = addedSentences.first().take(100)
+            "Added: \"$sample${if (addedSentences.first().length > 100) "..." else ""}\""
+        } else if (wordDelta != 0) {
+            "Text updated across sections"
         } else {
-            "Archived offline snapshot of $title"
+            "Content refreshed without major changes"
         }
-        return AiEnrichmentResult(
-            summary = summary,
-            tagsCsv = extractTopKeywords(corpus),
-            ocrText = ocrText.take(2000)
-        )
+
+        return "$wordDeltaStr • $diffDetail"
     }
 
-    private fun extractTopKeywords(corpus: String): String {
+    private fun extractTopKeywords(text: String): List<String> {
         val stopWords = setOf(
-            "the", "and", "for", "that", "this", "with", "from", "your", "have",
-            "more", "about", "will", "home", "page", "http", "https", "com"
+            "the", "and", "for", "that", "this", "with", "from", "your", "have", "more",
+            "will", "about", "https", "http", "www", "com", "page", "article", "news", "said"
         )
-        return corpus.lowercase()
-            .split(Regex("[^a-z0-9]+"))
-            .filter { it.length >= 4 && it !in stopWords }
+        return text.lowercase()
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .split(Regex("\\s+"))
+            .filter { it.length in 5..14 && it !in stopWords }
             .groupingBy { it }
             .eachCount()
             .entries
             .sortedByDescending { it.value }
-            .take(5)
-            .joinToString(", ") { it.key }
-    }
-
-    private suspend fun runOcrOnScreenshot(file: File): String = withContext(Dispatchers.IO) {
-        if (!file.exists()) return@withContext ""
-        runCatching {
-            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
-            val visionText = ocrRecognizer.process(image).await()
-            visionText.text.replace(Regex("\\s+"), " ").trim()
-        }.getOrDefault("")
+            .take(4)
+            .map { it.key.replaceFirstChar { c -> c.uppercase() } }
     }
 }

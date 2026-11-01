@@ -13,8 +13,8 @@ android {
         applicationId = "com.local.pocketarchive"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 6
+        versionName = "0.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -61,6 +61,7 @@ dependencies {
     ksp("androidx.room:room-compiler:$roomVersion")
 
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("com.google.mediapipe:tasks-genai:0.10.21")
     implementation("com.google.mlkit:text-recognition:16.0.1")
 }

@@ -19,8 +19,8 @@ object DomainColorHelper {
     )
 
     fun extractDisplaySiteName(page: ArchivedPage): String {
-        val explicitSite = page.metadata.siteName?.trim()
-        if (!explicitSite.isNullOrBlank()) return explicitSite
+        val explicitSite = page.siteName.trim()
+        if (explicitSite.isNotBlank()) return explicitSite
         val host = runCatching { Uri.parse(page.originalUrl).host ?: page.originalUrl }
             .getOrDefault(page.originalUrl)
             .removePrefix("www.")
@@ -49,9 +49,9 @@ object DomainColorHelper {
 
     fun formatWebsitePrefixedDescription(page: ArchivedPage): String {
         val siteName = extractDisplaySiteName(page)
-        val authorPart = page.metadata.author?.takeIf { it.isNotBlank() }?.let { "by $it — " } ?: ""
-        val bodyPart = page.summary.ifBlank {
-            page.metadata.extractedTextSnippet.take(180).ifBlank { "Offline snapshot ready." }
+        val authorPart = page.author.takeIf { it.isNotBlank() }?.let { "by $it — " } ?: ""
+        val bodyPart = page.aiSummary.ifBlank {
+            page.extractedTextSummary.take(180).ifBlank { "Offline snapshot ready." }
         }
         return "$siteName - $authorPart$bodyPart"
     }

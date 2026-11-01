@@ -4,157 +4,173 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.pdf.PdfDocument
-import android.net.Uri
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
 import androidx.core.content.FileProvider
 import com.local.pocketarchive.data.local.ArchivedPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.min
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-object ExportAndShareHelper {
+class ExportAndShareHelper(private val context: Context) {
 
-    suspend fun exportPageToPdf(context: Context, page: ArchivedPage): Result<File> = withContext(Dispatchers.IO) {
-        runCatching {
-            val exportDir = File(context.filesDir, "exports").apply { mkdirs() }
-            val safeTitle = page.title.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(35).ifBlank { page.uuid.take(8) }
-            val pdfFile = File(exportDir, "Pixbuchey_${safeTitle}.pdf")
+    suspend fun generateSinglePagePdf(page: ArchivedPage): File? =
+        generateBatchPdf(listOf(page), "PageVault_${page.uuid.take(8)}.pdf")
 
-            val pdfDoc = PdfDocument()
-            val pageWidth = 612
-            val pageHeight = 792
+    suspend fun generateBatchPdf(
+        pages: List<ArchivedPage>,
+        fileName: String = "PageVault_Batch_${System.currentTimeMillis()}.pdf"
+    ): File? = withContext(Dispatchers.IO) {
+        if (pages.isEmpty()) return@withContext null
+        val pdfDocument = PdfDocument()
+        val titlePaint = Paint().apply { textSize = 16f; isFakeBoldText = true }
+        val bodyPaint = Paint().apply { textSize = 11f }
 
-            val pageInfo1 = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create()
-            val pdfPage1 = pdfDoc.startPage(pageInfo1)
-            val canvas1: Canvas = pdfPage1.canvas
+        try {
+            pages.forEachIndexed { index, page ->
+                val pageInfo = PdfDocument.PageInfo.Builder(612, 792, index + 1).create()
+                val pdfPage = pdfDocument.startPage(pageInfo)
+                val canvas: Canvas = pdfPage.canvas
 
-            val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.rgb(230, 81, 0)
-                textSize = 18f
-                isFakeBoldText = true
-            }
-            val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.BLACK
-                textSize = 12f
-            }
+                var yPos = 40f
+                canvas.drawText(page.title.take(65), 36f, yPos, titlePaint)
+                yPos += 20f
+                canvas.drawText("URL: ${page.originalUrl.take(80)}", 36f, yPos, bodyPaint)
+                yPos += 18f
+                canvas.drawText(
+                    "Captured in: ${String.format(Locale.US, "%.1fs", page.captureDurationMs / 1000.0)}",
+                    36f,
+                    yPos,
+                    bodyPaint
+                )
+                yPos += 24f
 
-            canvas1.drawText("PIXBUCHEY OFFLINE ARCHIVE", 36f, 42f, titlePaint)
-            val siteFormatted = DomainColorHelper.formatWebsitePrefixedDescription(page)
-            val fullText = buildString {
-                appendLine("Title: ${page.title}")
-                appendLine("Source: ${DomainColorHelper.extractDisplaySiteName(page)}")
-                page.metadata.author?.let { appendLine("Author: $it") }
-                appendLine("Original URL: ${page.originalUrl}")
-                appendLine("Word Count: ${page.metadata.wordCount} words")
-                if (page.tagsCsv.isNotBlank()) appendLine("AI Tags: ${page.tagsCsv}")
-                appendLine("\n--- AI SUMMARY & DESCRIPTION ---")
-                appendLine(siteFormatted)
-                appendLine("\n--- EXTRACTED ARTICLE TEXT ---")
-                appendLine(page.metadata.extractedTextSnippet.take(2500))
-            }
-
-            canvas1.save()
-            canvas1.translate(36f, 65f)
-            val staticLayout = StaticLayout.Builder
-                .obtain(fullText, 0, fullText.length, bodyPaint, pageWidth - 72)
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .build()
-            staticLayout.draw(canvas1)
-            canvas1.restore()
-            pdfDoc.finishPage(pdfPage1)
-
-            val screenshotPath = page.screenshotFilePath
-            if (screenshotPath != null && File(screenshotPath).exists()) {
-                val bitmap = BitmapFactory.decodeFile(screenshotPath)
-                if (bitmap != null) {
-                    val margin = 24
-                    val targetDrawWidth = pageWidth - (margin * 2)
-                    val scale = targetDrawWidth.toFloat() / bitmap.width.toFloat()
-                    val sliceSourceHeight = ((pageHeight - (margin * 2)) / scale).toInt().coerceAtLeast(400)
-
-                    var yOffset = 0
-                    var pageNum = 2
-                    while (yOffset < bitmap.height && pageNum <= 12) {
-                        val currentSliceHeight = min(sliceSourceHeight, bitmap.height - yOffset)
-                        val destHeight = (currentSliceHeight * scale).toInt()
-                        val pInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum).create()
-                        val pPage = pdfDoc.startPage(pInfo)
-                        val srcRect = Rect(0, yOffset, bitmap.width, yOffset + currentSliceHeight)
-                        val dstRect = Rect(margin, margin, margin + targetDrawWidth, margin + destHeight)
-                        pPage.canvas.drawBitmap(bitmap, srcRect, dstRect, null)
-                        pdfDoc.finishPage(pPage)
-                        yOffset += currentSliceHeight
-                        pageNum++
-                    }
-                    bitmap.recycle()
+                val summary = page.aiSummary.ifBlank { page.extractedTextSummary }
+                summary.chunked(85).take(8).forEach { line ->
+                    canvas.drawText(line, 36f, yPos, bodyPaint)
+                    yPos += 15f
                 }
+
+                page.screenshotFilePath?.let { path ->
+                    val file = File(path)
+                    if (file.exists()) {
+                        val bitmap = BitmapFactory.decodeFile(path)
+                        if (bitmap != null) {
+                            val top = (yPos + 12f).toInt()
+                            val availableHeight = (750 - top).coerceAtLeast(100)
+                            val destRect = Rect(36, top, 576, top + availableHeight)
+                            canvas.drawBitmap(bitmap, null, destRect, null)
+                        }
+                    }
+                }
+                pdfDocument.finishPage(pdfPage)
             }
 
-            FileOutputStream(pdfFile).use { out ->
-                pdfDoc.writeTo(out)
-            }
-            pdfDoc.close()
-            pdfFile
+            val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val outFile = File(exportDir, fileName)
+            FileOutputStream(outFile).use { pdfDocument.writeTo(it) }
+            outFile
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        } finally {
+            pdfDocument.close()
         }
     }
 
-    suspend fun exportAndSharePagesAsPdf(
-        context: Context,
+    suspend fun generateSingleMarkdown(page: ArchivedPage): File? =
+        generateBatchMarkdown(listOf(page), "PageVault_${page.uuid.take(8)}_v${page.versionNumber}.md")
+
+    suspend fun generateSinglePageMarkdown(page: ArchivedPage): File? =
+        generateSingleMarkdown(page)
+
+    suspend fun generateBatchMarkdown(
         pages: List<ArchivedPage>,
-        preferGoogleDrive: Boolean = false
-    ): Result<Unit> = withContext(Dispatchers.Main) {
-        runCatching {
-            val uris = ArrayList<Uri>()
-            for (page in pages) {
-                val pdfFile = exportPageToPdf(context, page).getOrThrow()
-                val uri = FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.fileprovider",
-                    pdfFile
-                )
-                uris.add(uri)
-            }
-            if (uris.isEmpty()) return@runCatching
+        fileName: String = "PageVault_Corpus_${System.currentTimeMillis()}.md"
+    ): File? = withContext(Dispatchers.IO) {
+        if (pages.isEmpty()) return@withContext null
+        try {
+            val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val outFile = File(exportDir, fileName)
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US)
 
-            val shareIntent = if (uris.size == 1) {
-                Intent(Intent.ACTION_SEND).apply {
-                    type = "application/pdf"
-                    putExtra(Intent.EXTRA_STREAM, uris.first())
-                    putExtra(Intent.EXTRA_SUBJECT, "Pixbuchey Archive: ${pages.first().title}")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-            } else {
-                Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                    type = "application/pdf"
-                    putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                    putExtra(Intent.EXTRA_SUBJECT, "Pixbuchey Export (${uris.size} Articles)")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val markdownContent = buildString {
+                appendLine("# PageVault Structured AI & Word-Mapping Corpus")
+                appendLine("- **Exported Articles:** ${pages.size}")
+                appendLine("- **Generated On-Device:** ${dateFormat.format(Date())}")
+                appendLine("- **Privacy Guarantee:** 100% Local On-Device Extraction (Zero Cloud)")
+                appendLine()
+                appendLine("---")
+                appendLine()
+
+                pages.forEachIndexed { idx, page ->
+                    val captureDate = dateFormat.format(Date(page.timestampEpochMillis))
+                    appendLine("## [${idx + 1}] ${page.title} (v${page.versionNumber})")
+                    appendLine("```yaml")
+                    appendLine("uuid: \"${page.uuid}\"")
+                    appendLine("parent_uuid: \"${page.parentUuid ?: "root"}\"")
+                    appendLine("version: ${page.versionNumber}")
+                    appendLine("source_url: \"${page.originalUrl}\"")
+                    appendLine("domain: \"${page.siteName}\"")
+                    appendLine("author: \"${page.author}\"")
+                    appendLine("captured_at: \"$captureDate\"")
+                    appendLine("capture_duration_sec: ${String.format(Locale.US, "%.1f", page.captureDurationMs / 1000.0)}")
+                    appendLine("on_device_ai_model: \"${page.aiModelUsed}\"")
+                    appendLine("tags: [${page.aiTags.joinToString(", ") { "\"$it\"" }}]")
+                    appendLine("```")
+                    appendLine()
+                    if (page.changeDiffSummary.isNotBlank()) {
+                        appendLine("### 🔄 Version Diff vs. Previous Pull")
+                        appendLine(page.changeDiffSummary)
+                        appendLine()
+                    }
+                    appendLine("### 🧠 On-Device AI Summary")
+                    appendLine(page.aiSummary.ifBlank { page.extractedTextSummary })
+                    appendLine()
+                    appendLine("### 📄 Extracted DOM Text (Corpus Body for Word Mapping)")
+                    appendLine(page.extractedTextSummary.ifBlank { "No DOM text extracted." })
+                    appendLine()
+                    if (page.ocrText.isNotBlank()) {
+                        appendLine("### 🔍 Visual Screenshot OCR Transcript")
+                        appendLine(page.ocrText)
+                        appendLine()
+                    }
+                    appendLine("---")
+                    appendLine()
                 }
             }
 
-            if (preferGoogleDrive) {
-                shareIntent.setPackage("com.google.android.apps.docs")
-                val canResolveDrive = shareIntent.resolveActivity(context.packageManager) != null
-                if (!canResolveDrive) {
-                    shareIntent.setPackage(null)
-                }
-            }
-
-            val chooser = Intent.createChooser(
-                shareIntent,
-                if (preferGoogleDrive) "Save to Google Drive" else "Export PDF Articles"
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(chooser)
+            outFile.writeText(markdownContent)
+            outFile
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
         }
+    }
+
+    fun shareFilesToDriveOrApps(files: List<File>, mimeType: String = "application/pdf") {
+        if (files.isEmpty()) return
+        val uris = ArrayList(files.map { file ->
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        })
+
+        val shareIntent = Intent().apply {
+            action = if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE
+            type = mimeType
+            if (uris.size == 1) {
+                putExtra(Intent.EXTRA_STREAM, uris.first())
+            } else {
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            }
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "Export from PageVault").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 }

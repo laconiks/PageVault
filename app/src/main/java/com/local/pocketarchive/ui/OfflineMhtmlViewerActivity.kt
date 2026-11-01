@@ -1,195 +1,226 @@
 package com.local.pocketarchive.ui
 
-import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
-import android.print.PrintAttributes
-import android.print.PrintManager
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Web
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
-import com.local.pocketarchive.ui.theme.AppThemeMode
-import com.local.pocketarchive.ui.theme.PixbucheyTheme
-import com.local.pocketarchive.ui.theme.ThemePreferences
+import com.local.pocketarchive.ui.theme.PocketArchiveTheme
 import java.io.File
 
 class OfflineMhtmlViewerActivity : ComponentActivity() {
-
-    companion object {
-        const val EXTRA_TITLE = "extra_title"
-        const val EXTRA_MHTML_PATH = "extra_mhtml_path"
-        const val EXTRA_SCREENSHOT_PATH = "extra_screenshot_path"
-    }
-
-    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val title = intent.getStringExtra(EXTRA_TITLE) ?: "Archived Snapshot"
-        val mhtmlPath = intent.getStringExtra(EXTRA_MHTML_PATH)
-        val screenshotPath = intent.getStringExtra(EXTRA_SCREENSHOT_PATH)
-        val themePrefs = ThemePreferences(this)
+
+        val mhtmlPath = intent.getStringExtra("MHTML_PATH")
+        val screenshotPath = intent.getStringExtra("SCREENSHOT_PATH")
+        val pageTitle = intent.getStringExtra("PAGE_TITLE") ?: "Vault Snapshot"
+        val originalUrl = intent.getStringExtra("ORIGINAL_URL") ?: ""
 
         setContent {
-            val mode by themePrefs.themeMode.collectAsState()
-            val useDark = when (mode) {
-                AppThemeMode.SYSTEM -> isSystemInDarkTheme()
-                AppThemeMode.DARK -> true
-                AppThemeMode.LIGHT -> false
+            PocketArchiveTheme {
+                OfflineViewerScreen(
+                    title = pageTitle,
+                    originalUrl = originalUrl,
+                    mhtmlPath = mhtmlPath,
+                    screenshotPath = screenshotPath,
+                    onBack = { finish() }
+                )
             }
+        }
+    }
+}
 
-            PixbucheyTheme(darkTheme = useDark) {
-                var selectedTab by remember { mutableIntStateOf(0) }
-                var webViewRef by remember { mutableStateOf<WebView?>(null) }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OfflineViewerScreen(
+    title: String,
+    originalUrl: String,
+    mhtmlPath: String?,
+    screenshotPath: String?,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    var showScreenshotMode by remember { mutableStateOf(false) }
 
-                Scaffold(
-                    topBar = {
-                        TopAppBar(
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                titleContentColor = MaterialTheme.colorScheme.onSurface
-                            ),
-                            navigationIcon = {
-                                FilledTonalButton(
-                                    onClick = { finish() },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                    modifier = Modifier.padding(start = 8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = "Back",
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Back")
-                                }
-                            },
-                            title = {
-                                Text(
-                                    text = title,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                            },
-                            actions = {
-                                IconButton(
-                                    onClick = {
-                                        webViewRef?.let { printWebViewToPdf(this@OfflineMhtmlViewerActivity, it, title) }
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PictureAsPdf,
-                                        contentDescription = "Export MHTML as PDF",
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                                SingleChoiceSegmentedButtonRow(modifier = Modifier.padding(end = 8.dp)) {
-                                    SegmentedButton(
-                                        selected = selectedTab == 0,
-                                        onClick = { selectedTab = 0 },
-                                        shape = SegmentedButtonDefaults.itemShape(0, 2)
-                                    ) { Text("MHTML") }
-                                    SegmentedButton(
-                                        selected = selectedTab == 1,
-                                        onClick = { selectedTab = 1 },
-                                        shape = SegmentedButtonDefaults.itemShape(1, 2)
-                                    ) { Text("Screenshot") }
-                                }
-                            }
+    // System Back gesture / hardware back button with haptic feedback
+    BackHandler {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        onBack()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (showScreenshotMode) "1080p Full-Canvas Screenshot (Pinch to Zoom)" else "Offline MHTML DOM Snapshot",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
-                ) { padding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
+                },
+                navigationIcon = {
+                    IconButton(
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onBack()
+                        }
                     ) {
-                        if (selectedTab == 0 && mhtmlPath != null) {
-                            AndroidView(
-                                modifier = Modifier.fillMaxSize(),
-                                factory = { ctx ->
-                                    WebView(ctx).apply {
-                                        settings.javaScriptEnabled = false
-                                        settings.blockNetworkLoads = true
-                                        settings.allowFileAccess = true
-                                        settings.builtInZoomControls = true
-                                        settings.displayZoomControls = false
-                                        settings.useWideViewPort = true
-                                        settings.loadWithOverviewMode = true
-                                        webViewClient = WebViewClient()
-                                        loadUrl("file://$mhtmlPath")
-                                        webViewRef = this
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Vault"
+                        )
+                    }
+                },
+                actions = {
+                    if (originalUrl.isNotBlank()) {
+                        IconButton(
+                            onClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                runCatching {
+                                    val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(originalUrl)).apply {
+                                        setPackage("com.android.chrome")
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    try {
+                                        context.startActivity(chromeIntent)
+                                    } catch (_: Exception) {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(originalUrl)).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                        )
                                     }
                                 }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.OpenInBrowser,
+                                contentDescription = "Open Live URL in Chrome",
+                                tint = MaterialTheme.colorScheme.primary
                             )
-                        } else if (screenshotPath != null) {
-                            PinchZoomScreenshotView(screenshotPath = screenshotPath)
                         }
                     }
+
+                    if (!screenshotPath.isNullOrBlank()) {
+                        IconButton(
+                            onClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                showScreenshotMode = !showScreenshotMode
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (showScreenshotMode) Icons.Default.Web else Icons.Default.Image,
+                                contentDescription = "Toggle MHTML / Screenshot",
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            if (showScreenshotMode && !screenshotPath.isNullOrBlank()) {
+                ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+            } else if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
+                OfflineMhtmlWebView(mhtmlPath = mhtmlPath)
+            } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+                ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+            } else {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Snapshot file not found on disk.")
                 }
             }
         }
     }
-
-    private fun printWebViewToPdf(context: Context, webView: WebView, jobTitle: String) {
-        val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager ?: return
-        val jobName = "Pixbuchey_${jobTitle.take(25)}"
-        val printAdapter = webView.createPrintDocumentAdapter(jobName)
-        printManager.print(jobName, printAdapter, PrintAttributes.Builder().build())
-    }
 }
 
 @Composable
-private fun PinchZoomScreenshotView(screenshotPath: String) {
+fun OfflineMhtmlWebView(mhtmlPath: String) {
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { context ->
+            WebView(context).apply {
+                settings.apply {
+                    javaScriptEnabled = false
+                    allowFileAccess = true
+                    allowContentAccess = true
+                    builtInZoomControls = true
+                    displayZoomControls = false
+                    loadWithOverviewMode = true
+                    useWideViewPort = true
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean = true // Keep strictly offline inside MHTML viewer
+                }
+                loadUrl(Uri.fromFile(File(mhtmlPath)).toString())
+            }
+        }
+    )
+}
+
+@Composable
+fun ZoomableScreenshotCanvas(screenshotPath: String) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
-    val scrollState = rememberScrollState()
+
+    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+        scale = (scale * zoomChange).coerceIn(1f, 5f)
+        if (scale > 1f) {
+            offset += panChange
+        } else {
+            offset = Offset.Zero
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -206,28 +237,15 @@ private fun PinchZoomScreenshotView(screenshotPath: String) {
                     }
                 )
             }
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    val newScale = (scale * zoom).coerceIn(1f, 5f)
-                    scale = newScale
-                    if (newScale > 1f) {
-                        offset = Offset(
-                            x = (offset.x + pan.x).coerceIn(-1500f, 1500f),
-                            y = (offset.y + pan.y).coerceIn(-4000f, 4000f)
-                        )
-                    } else {
-                        offset = Offset.Zero
-                    }
-                }
-            }
-            .verticalScroll(scrollState)
+            .transformable(state = transformableState),
+        contentAlignment = Alignment.TopCenter
     ) {
         AsyncImage(
             model = File(screenshotPath),
-            contentDescription = "Full Page Zoomable Screenshot",
+            contentDescription = "Full-Page Snapshot",
             contentScale = ContentScale.FillWidth,
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .graphicsLayer(
                     scaleX = scale,
                     scaleY = scale,

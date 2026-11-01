@@ -74,7 +74,12 @@ class WebArchiveCaptureManager(private val context: Context) {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    suspend fun captureUrl(uuid: String, targetUrl: String): Result<RawCaptureResult> = runCatching {
+    suspend fun captureUrl(
+        uuid: String,
+        targetUrl: String,
+        spoofCrawler: Boolean = true,
+        disableJs: Boolean = false
+    ): Result<RawCaptureResult> = runCatching {
         withTimeout(CAPTURE_TIMEOUT_MS) {
             val archiveDir = File(context.filesDir, "archives/$uuid").apply { mkdirs() }
             val mhtmlFile = File(archiveDir, "snapshot_$uuid.mht")
@@ -86,30 +91,39 @@ class WebArchiveCaptureManager(private val context: Context) {
                 val initHeightSpec = View.MeasureSpec.makeMeasureSpec(DEFAULT_VIEWPORT_HEIGHT_PX, View.MeasureSpec.EXACTLY)
 
                 val webView = WebView(context).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
                     settings.loadsImagesAutomatically = true
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
-                    settings.userAgentString =
-                        "Mozilla/5.0 (Linux; Android 15; Pixel 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
                     measure(widthSpec, initHeightSpec)
                     layout(0, 0, VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX)
                 }
+                PaywallBypassHelper.configureWebViewForCapture(
+                    webView = webView,
+                    spoofCrawler = spoofCrawler,
+                    disableJs = disableJs
+                )
 
                 try {
                     // Wait up to 18s for page load (news sites with ad trackers may never fire 100% onPageFinished)
                     withTimeoutOrNull(18_000L) {
-                        awaitPageLoaded(webView, targetUrl)
+                        awaitPageLoaded(webView, targetUrl, spoofCrawler)
                     }
                     delay(800)
 
-                    for (offset in 0..3000 step 1000) {
-                        webView.evaluateJavascript("window.scrollTo(0, $offset);", null)
-                        delay(150)
+                    if (!disableJs) {
+                        for (offset in 0..3000 step 1000) {
+                            webView.evaluateJavascript("window.scrollTo(0, $offset);", null)
+                            delay(150)
+                        }
+                        webView.evaluateJavascript("window.scrollTo(0, 0);", null)
+                        delay(350)
+
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            PaywallBypassHelper.unlockAndSanitizeDom(webView) {
+                                if (cont.isActive) cont.resume(Unit)
+                            }
+                        }
                     }
-                    webView.evaluateJavascript("window.scrollTo(0, 0);", null)
-                    delay(350)
 
                     val base64Payload = evaluateJsSuspend(webView, DOM_STABILIZATION_JS)
                     val decodedJson = runCatching {
@@ -177,38 +191,53 @@ class WebArchiveCaptureManager(private val context: Context) {
         }
     }
 
-    private suspend fun awaitPageLoaded(webView: WebView, url: String) =
-        suspendCancellableCoroutine<Unit> { cont ->
-            var resumed = false
-            webView.webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    if (newProgress >= 90 && !resumed && cont.isActive) {
-                        resumed = true
-                        cont.resume(Unit)
+    private suspend fun awaitPageLoaded(
+        webView: WebView,
+        url: String,
+        spoofCrawler: Boolean = true
+    ) = suspendCancellableCoroutine<Unit> { cont ->
+        var resumed = false
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                if (newProgress >= 90 && !resumed && cont.isActive) {
+                    val targetView = view ?: webView
+                    PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
+                        if (!resumed && cont.isActive) {
+                            resumed = true
+                            cont.resume(Unit)
+                        }
                     }
                 }
             }
-            webView.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+        }
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                val targetView = view ?: webView
+                PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
                     if (!resumed && cont.isActive) {
                         resumed = true
                         cont.resume(Unit)
                     }
                 }
+            }
 
-                override fun onReceivedError(
-                    view: WebView?,
-                    request: WebResourceRequest?,
-                    error: WebResourceError?
-                ) {
-                    if (request?.isForMainFrame == true && !resumed && cont.isActive) {
-                        resumed = true
-                        cont.resume(Unit)
-                    }
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                if (request?.isForMainFrame == true && !resumed && cont.isActive) {
+                    resumed = true
+                    cont.resume(Unit)
                 }
             }
+        }
+        if (spoofCrawler) {
+            webView.loadUrl(url, PaywallBypassHelper.SPOOFED_HEADERS)
+        } else {
             webView.loadUrl(url)
         }
+    }
 
     private suspend fun evaluateJsSuspend(webView: WebView, script: String): String =
         suspendCancellableCoroutine { cont ->

@@ -16,5 +16,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PocketArchive"
+rootProject.name = "PageVault"
 include(":app")
