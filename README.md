@@ -28,3 +28,63 @@ PageVault is an open-source, client-side Android application designed to capture
 ---
 
 ## 🏛️ System Architecture
+[ INCOMING URL / SHARE INTENT ]
+                                  │
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │    WebArchiveCaptureManager   │
+                  │  Headless Chromium Execution  │
+                  └───────────────┬───────────────┘
+                                  │
+             ┌────────────────────┴────────────────────┐
+             ▼                                         ▼
+ [ RFC-Compliant .mht ]                     [ Full-Page Bitmap ]
+ DOM & Asset Serialization                  Off-screen Canvas Render
+             │                                         │
+             │                                         ▼
+             │                              ┌─────────────────────┐
+             │                              │ ML Kit Text Vision  │
+             │                              │ On-Device Visual OCR│
+             │                              └──────────┬──────────┘
+             │                                         │
+             └────────────────────┬────────────────────┘
+                                  │
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │     LocalAiEdgeProcessor      │
+                  │ LiteRT (GPU/NPU) or Fallback  │
+                  └───────────────┬───────────────┘
+                                  │
+                                  ▼
+                  ┌───────────────────────────────┐
+                  │   Room SQLite Database (FTS4) │
+                  │  Encrypted App-Private Storage│
+                  └───────────────────────────────┘
+---
+
+## 🛠️ Technology Stack
+
+* **Platform:** Android (Min SDK: 29 / Android 10, Target SDK: 35)
+* **Language:** Kotlin 2.0+
+* **User Interface:** Jetpack Compose, Material 3, Material Icons Extended
+* **Data Storage:** Android Jetpack Room (SQLite + FTS4 Full-Text Search)
+* **Image Loading:** Coil Compose
+* **On-Device AI / ML:** 
+  * Google AI Edge / MediaPipe Tasks GenAI (`com.google.mediapipe:tasks-genai`)
+  * Google ML Kit Text Recognition (`com.google.android.gms:play-services-mlkit-text-recognition`)
+* **Concurrency:** Kotlin Coroutines & Asynchronous StateFlow
+
+---
+
+## 🔒 Privacy & Local-First Commitment
+
+PageVault is built on strict data privacy principles:
+* **Zero External Analytics or Trackers:** The application contains no telemetry or remote analytics SDKs.
+* **No Relay Servers:** Web requests originate exclusively from the local device Chromium runtime, identical to standard mobile web navigation.
+* **App-Private Storage:** Snapshots, cached assets, and SQLite databases reside within `context.filesDir` and cannot be accessed by other applications without explicit user export actions.
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for full details.                  
