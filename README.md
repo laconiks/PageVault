@@ -85,6 +85,7 @@ PageVault is built on strict data privacy principles:
 
 ---
 
-## 📄 License
+## ⚖️ License & Privacy
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for full details.                  
+* **Privacy First:** PageVault operates entirely offline. No browsing history, queries, or captured archives are ever transmitted to external servers.
+* **License:** Distributed under the [MIT License](License.md). See the [License.md](License.md) file for full details.               
