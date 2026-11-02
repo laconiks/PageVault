@@ -25,74 +25,210 @@ class ExportAndShareHelper(private val context: Context) {
     }
 
     suspend fun generateSinglePagePdf(page: ArchivedPage): File? =
-        generateBatchPdf(listOf(page), "PageVault_${page.uuid.take(8)}.pdf")
+        generateBatchPdf(listOf(page), "PageVault_${page.uuid.take(8)}_v${page.versionNumber}.pdf")
 
     suspend fun generateBatchPdf(
         pages: List<ArchivedPage>,
         fileName: String = "PageVault_Batch_${System.currentTimeMillis()}.pdf"
     ): File? = withContext(Dispatchers.IO) {
-        if (pages.isEmpty()) {
-            DiagnosticLogHelper.log(TAG, "generateBatchPdf called with empty pages list")
-            return@withContext null
-        }
+        if (pages.isEmpty()) return@withContext null
         val pdfDocument = PdfDocument()
-        val titlePaint = Paint().apply { textSize = 16f; isFakeBoldText = true }
-        val bodyPaint = Paint().apply { textSize = 11f }
+
+        val pageWidth = 612 // Standard Letter Width (8.5in * 72pt)
+        val pageHeight = 792 // Standard Letter Height (11in * 72pt)
+        val margin = 36
+        val contentWidth = pageWidth - (margin * 2) // 540pt
+        val bottomLimit = pageHeight - margin // 756pt
+
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 15f
+            isFakeBoldText = true
+            color = android.graphics.Color.BLACK
+        }
+        val metaPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 9.5f
+            color = android.graphics.Color.DKGRAY
+        }
+        val sectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 11f
+            isFakeBoldText = true
+            color = android.graphics.Color.rgb(0, 102, 153)
+        }
+        val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 10.5f
+            color = android.graphics.Color.BLACK
+        }
+        val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+        var globalPdfPageNumber = 1
+
+        fun wrapTextToLines(text: String, paint: Paint, maxWidthPt: Float): List<String> {
+            val result = mutableListOf<String>()
+            text.split("\n").forEach { paragraph ->
+                val words = paragraph.trim().split(Regex("\\s+"))
+                var currentLine = StringBuilder()
+                for (word in words) {
+                    if (word.isEmpty()) continue
+                    val testLine = if (currentLine.isEmpty()) word else "$currentLine $word"
+                    if (paint.measureText(testLine) <= maxWidthPt) {
+                        currentLine = StringBuilder(testLine)
+                    } else {
+                        if (currentLine.isNotEmpty()) result.add(currentLine.toString())
+                        // Handle very long unbroken URLs
+                        if (paint.measureText(word) > maxWidthPt) {
+                            word.chunked(65).forEach { chunk -> result.add(chunk) }
+                            currentLine = StringBuilder()
+                        } else {
+                            currentLine = StringBuilder(word)
+                        }
+                    }
+                }
+                if (currentLine.isNotEmpty()) result.add(currentLine.toString())
+            }
+            return result
+        }
 
         try {
-            DiagnosticLogHelper.log(TAG, "Generating PDF with ${pages.size} page(s) -> $fileName")
-            pages.forEachIndexed { index, page ->
-                val pageInfo = PdfDocument.PageInfo.Builder(612, 792, index + 1).create()
-                val pdfPage = pdfDocument.startPage(pageInfo)
-                val canvas: Canvas = pdfPage.canvas
+            for (page in pages) {
+                var pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, globalPdfPageNumber++).create()
+                var pdfPage = pdfDocument.startPage(pageInfo)
+                var canvas: Canvas = pdfPage.canvas
+                var yPos = margin + 14f
 
-                var yPos = 40f
-                canvas.drawText(page.title.take(65), 36f, yPos, titlePaint)
-                yPos += 20f
-                canvas.drawText("URL: ${page.originalUrl.take(80)}", 36f, yPos, bodyPaint)
-                yPos += 18f
-                canvas.drawText(
-                    "Captured in: ${String.format(Locale.US, "%.1fs", page.captureDurationMs / 1000.0)}",
-                    36f,
-                    yPos,
-                    bodyPaint
-                )
-                yPos += 24f
-
-                val summary = page.aiSummary.ifBlank { page.extractedTextSummary }
-                summary.chunked(85).take(8).forEach { line ->
-                    canvas.drawText(line, 36f, yPos, bodyPaint)
-                    yPos += 15f
+                fun startNewPdfPage() {
+                    pdfDocument.finishPage(pdfPage)
+                    pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, globalPdfPageNumber++).create()
+                    pdfPage = pdfDocument.startPage(pageInfo)
+                    canvas = pdfPage.canvas
+                    yPos = margin + 14f
                 }
 
+                // 1. Draw Wrapped Title
+                val titleLines = wrapTextToLines(page.title.ifBlank { "Archived Webpage" }, titlePaint, contentWidth.toFloat())
+                for (line in titleLines) {
+                    if (yPos > bottomLimit) startNewPdfPage()
+                    canvas.drawText(line, margin.toFloat(), yPos, titlePaint)
+                    yPos += 19f
+                }
+                yPos += 4f
+
+                // 2. Draw Metadata (URL, Timestamp, Capture Duration, Model)
+                val dateStr = SimpleDateFormat("MMM d, yyyy • h:mm a", Locale.US)
+                    .format(Date(page.timestampEpochMillis))
+                val durationStr = String.format(Locale.US, "%.1fs", page.captureDurationMs / 1000.0)
+
+                wrapTextToLines("Source URL: ${page.originalUrl}", metaPaint, contentWidth.toFloat()).forEach { line ->
+                    if (yPos > bottomLimit) startNewPdfPage()
+                    canvas.drawText(line, margin.toFloat(), yPos, metaPaint)
+                    yPos += 13f
+                }
+                if (yPos > bottomLimit) startNewPdfPage()
+                canvas.drawText(
+                    "Captured: $dateStr  •  Duration: $durationStr  |  Version: v${page.versionNumber}  •  AI: ${page.aiModelUsed}",
+                    margin.toFloat(),
+                    yPos,
+                    metaPaint
+                )
+                yPos += 18f
+
+                // 3. Draw Version Diff if present
+                if (page.changeDiffSummary.isNotBlank()) {
+                    if (yPos > bottomLimit) startNewPdfPage()
+                    canvas.drawText("Version Comparison / Diff:", margin.toFloat(), yPos, sectionPaint)
+                    yPos += 14f
+                    wrapTextToLines(page.changeDiffSummary, bodyPaint, contentWidth.toFloat()).forEach { line ->
+                        if (yPos > bottomLimit) startNewPdfPage()
+                        canvas.drawText(line, margin.toFloat(), yPos, bodyPaint)
+                        yPos += 14f
+                    }
+                    yPos += 8f
+                }
+
+                // 4. Draw On-Device AI Summary
+                val summaryText = page.aiSummary.ifBlank { page.extractedTextSummary.take(500) }
+                if (summaryText.isNotBlank()) {
+                    if (yPos > bottomLimit) startNewPdfPage()
+                    canvas.drawText("On-Device Summary:", margin.toFloat(), yPos, sectionPaint)
+                    yPos += 14f
+                    wrapTextToLines(summaryText, bodyPaint, contentWidth.toFloat()).forEach { line ->
+                        if (yPos > bottomLimit) startNewPdfPage()
+                        canvas.drawText(line, margin.toFloat(), yPos, bodyPaint)
+                        yPos += 14f
+                    }
+                    yPos += 12f
+                }
+
+                // 5. Slice Full-Height Screenshot Proportionally Across Multiple PDF Pages (NEVER SQUISH)
                 page.screenshotFilePath?.let { path ->
                     val file = File(path)
                     if (file.exists()) {
-                        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeFile(path, boundsOptions)
-                        val sampleSize = calculateInSampleSize(boundsOptions, 600, 800)
-                        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                        val bitmap = BitmapFactory.decodeFile(path, decodeOptions)
-                        if (bitmap != null) {
-                            val top = (yPos + 12f).toInt()
-                            val availableHeight = (750 - top).coerceAtLeast(100)
-                            val destRect = Rect(36, top, 576, top + availableHeight)
-                            canvas.drawBitmap(bitmap, null, destRect, null)
+                        val bitmap = BitmapFactory.decodeFile(path)
+                        if (bitmap != null && bitmap.width > 0 && bitmap.height > 0) {
+                            val scale = contentWidth.toFloat() / bitmap.width.toFloat()
+                            var srcY = 0
+
+                            // If very little room left on Page 1, start screenshot cleanly on Page 2
+                            if (bottomLimit - yPos < 220f) {
+                                startNewPdfPage()
+                            }
+
+                            while (srcY < bitmap.height) {
+                                val availHeightPt = (bottomLimit - yPos).coerceAtLeast(100f)
+                                // How many source bitmap vertical pixels fit in availHeightPt at 1:1 aspect ratio?
+                                val maxSrcSliceHeightPx = (availHeightPt / scale).toInt().coerceAtLeast(1)
+                                val actualSrcSlicePx = minOf(maxSrcSliceHeightPx, bitmap.height - srcY)
+                                val destSliceHeightPt = (actualSrcSlicePx * scale).toInt()
+
+                                val srcRect = Rect(0, srcY, bitmap.width, srcY + actualSrcSlicePx)
+                                val dstRect = Rect(
+                                    margin,
+                                    yPos.toInt(),
+                                    margin + contentWidth,
+                                    yPos.toInt() + destSliceHeightPt
+                                )
+
+                                canvas.drawBitmap(bitmap, srcRect, dstRect, bitmapPaint)
+
+                                srcY += actualSrcSlicePx
+                                yPos += destSliceHeightPt + 12f
+
+                                if (srcY < bitmap.height) {
+                                    startNewPdfPage()
+                                }
+                            }
                             bitmap.recycle()
                         }
                     }
                 }
+
+                // 6. Paginate Full Extracted Article Text (So PDF also has clean readable text pages)
+                if (page.extractedTextSummary.length > 300) {
+                    if (bottomLimit - yPos < 140f) {
+                        startNewPdfPage()
+                    } else {
+                        yPos += 10f
+                    }
+                    canvas.drawText("Extracted Article Body Text:", margin.toFloat(), yPos, sectionPaint)
+                    yPos += 15f
+                    val bodyLines = wrapTextToLines(page.extractedTextSummary, bodyPaint, contentWidth.toFloat())
+                    for (line in bodyLines) {
+                        if (yPos > bottomLimit) startNewPdfPage()
+                        canvas.drawText(line, margin.toFloat(), yPos, bodyPaint)
+                        yPos += 14f
+                    }
+                }
+
                 pdfDocument.finishPage(pdfPage)
             }
 
             val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
             val outFile = File(exportDir, fileName)
             FileOutputStream(outFile).use { pdfDocument.writeTo(it) }
-            DiagnosticLogHelper.log(TAG, "PDF generated successfully: ${outFile.absolutePath} (${outFile.length()} bytes)")
+            DiagnosticLogHelper.log("Export", "Generated multi-page PDF (${globalPdfPageNumber - 1} pages): ${outFile.name}")
             outFile
-        } catch (t: Throwable) {
-            DiagnosticLogHelper.log(TAG, "generateBatchPdf failed: ${t.localizedMessage}")
-            t.printStackTrace()
+        } catch (e: Exception) {
+            DiagnosticLogHelper.log("ExportError", "PDF export failed: ${e.message}")
+            e.printStackTrace()
             null
         } finally {
             pdfDocument.close()
@@ -218,6 +354,7 @@ class ExportAndShareHelper(private val context: Context) {
         }
     }
 
+    @Suppress("unused")
     private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
         val height = options.outHeight
         val width = options.outWidth
