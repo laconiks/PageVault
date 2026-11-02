@@ -2,6 +2,7 @@ package com.local.pocketarchive.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,12 +16,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.local.pocketarchive.data.local.ArchivedPage
 import com.local.pocketarchive.ui.components.*
 import com.local.pocketarchive.util.ExportAndShareHelper
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+
+data class ArticleChain(
+    val latestPage: ArchivedPage,
+    val revisions: List<ArchivedPage>
+)
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     val context = LocalContext.current
@@ -33,6 +43,9 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     val selectedUuids by viewModel.selectedUuids.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val isGroupedByWebsite by viewModel.isGroupedByWebsite.collectAsState()
+    val isOneSentenceView by viewModel.isOneSentenceView.collectAsState()
+    val queuedUrls by viewModel.queuedUrls.collectAsState()
+    val captureStageText by viewModel.captureStageText.collectAsState()
     val rssSubscriptions by viewModel.rssSubscriptions.collectAsState()
     val currentAiModel by viewModel.aiModel.collectAsState()
     val showEdgeOnboarding by viewModel.showEdgeOnboarding.collectAsState()
@@ -45,7 +58,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Listen for "Generated in X.Xs" alerts and show pop-up Snackbar
+    // Listen for UI alerts and show pop-up Snackbar
     LaunchedEffect(Unit) {
         viewModel.uiAlerts.collectLatest { message ->
             snackbarHostState.showSnackbar(
@@ -55,10 +68,26 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
         }
     }
 
-    val groupedPages = remember(pages) {
-        pages.groupBy { page ->
-            page.siteName.ifBlank {
-                runCatching { Uri.parse(page.originalUrl).host?.removePrefix("www.") ?: "Other Sites" }
+    // Group revisions by chain root (parentUuid ?: uuid) so v2, v3, etc. collapse into the main card
+    val articleChains = remember(pages) {
+        val map = LinkedHashMap<String, MutableList<ArchivedPage>>()
+        for (page in pages) {
+            val rootKey = page.parentUuid ?: page.uuid
+            map.getOrPut(rootKey) { mutableListOf() }.add(page)
+        }
+        map.values.map { chainList ->
+            val sorted = chainList.sortedByDescending { it.versionNumber }
+            ArticleChain(
+                latestPage = sorted.first(),
+                revisions = sorted
+            )
+        }
+    }
+
+    val groupedChains = remember(articleChains) {
+        articleChains.groupBy { chain ->
+            chain.latestPage.siteName.ifBlank {
+                runCatching { Uri.parse(chain.latestPage.originalUrl).host?.removePrefix("www.") ?: "Other Sites" }
                     .getOrDefault("Other Sites")
             }
         }
@@ -91,6 +120,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                 val mdFile = exportHelper.generateBatchMarkdown(selectedPages)
                                 if (mdFile != null) {
                                     exportHelper.shareFilesToDriveOrApps(listOf(mdFile), "text/markdown")
+                                } else {
+                                    snackbarHostState.showSnackbar("Failed to generate Markdown batch export")
                                 }
                                 viewModel.clearSelection()
                             }
@@ -103,6 +134,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                 val pdfFile = exportHelper.generateBatchPdf(selectedPages)
                                 if (pdfFile != null) {
                                     exportHelper.shareFilesToDriveOrApps(listOf(pdfFile), "application/pdf")
+                                } else {
+                                    snackbarHostState.showSnackbar("Failed to generate PDF batch export")
                                 }
                                 viewModel.clearSelection()
                             }
@@ -164,7 +197,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 .padding(paddingValues)
                 .padding(horizontal = 14.dp)
         ) {
-            // Sleek Vault Intake Box: "Insert Page for the Vault"
+            // Sleek Vault Intake Box: "Insert Page for the Vault" + "+ Queue" + "Vault"
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -194,7 +227,21 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.weight(1f)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    OutlinedButton(
+                        onClick = {
+                            if (urlInput.isNotBlank()) {
+                                viewModel.addToQueue(urlInput)
+                                urlInput = ""
+                            }
+                        },
+                        enabled = urlInput.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp)
+                    ) {
+                        Text("+ Queue", fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
                     Button(
                         onClick = {
                             if (urlInput.isNotBlank()) {
@@ -204,7 +251,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         },
                         enabled = !isCapturing && urlInput.isNotBlank(),
                         shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                     ) {
                         if (isCapturing) {
                             CircularProgressIndicator(
@@ -219,9 +266,114 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 }
             }
 
+            // Page Queue Tray (If multiple URLs are queued)
+            if (queuedUrls.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Layers, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Page Queue (${queuedUrls.size} pending)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            TextButton(
+                                onClick = { viewModel.clearQueue() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("Clear", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            queuedUrls.forEach { qUrl ->
+                                val domain = runCatching { Uri.parse(qUrl).host?.removePrefix("www.") ?: qUrl }.getOrDefault(qUrl)
+                                InputChip(
+                                    selected = false,
+                                    onClick = { viewModel.removeFromQueue(qUrl) },
+                                    label = { Text(domain, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    trailingIcon = {
+                                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                                    }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = { viewModel.processQueue() },
+                            enabled = !isCapturing,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (isCapturing) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Processing Queue...")
+                            } else {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Vault All Queued (${queuedUrls.size})", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Dynamic Live Capture Progress Banner
+            if (isCapturing) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.5.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = captureStageText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "DOM locking freezes all styles, scripts, and media into an RFC-compliant snapshot for 100% offline access with zero server dependency.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Search Bar + "Group by Website" Filter Chip
+            // Search Bar + Filter Chips: "By Site" + "1-Sentence" / "Full Cards"
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -242,7 +394,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.weight(1f)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 FilterChip(
                     selected = isGroupedByWebsite,
                     onClick = { viewModel.toggleGroupByWebsite() },
@@ -251,7 +403,20 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         Icon(
                             imageVector = if (isGroupedByWebsite) Icons.Default.FolderSpecial else Icons.Default.ViewStream,
                             contentDescription = "Group by Website",
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                FilterChip(
+                    selected = isOneSentenceView,
+                    onClick = { viewModel.toggleOneSentenceView() },
+                    label = { Text(if (isOneSentenceView) "1-Sentence" else "Full") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (isOneSentenceView) Icons.Default.ShortText else Icons.Default.ViewAgenda,
+                            contentDescription = "Toggle 1-Sentence Compact View",
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 )
@@ -259,25 +424,32 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            if (pages.isEmpty()) {
+            // Articles Feed or Empty State
+            if (articleChains.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.EnhancedEncryption,
+                            imageVector = if (searchQuery.isNotBlank()) Icons.Default.SearchOff else Icons.Default.EnhancedEncryption,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(56.dp)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            "Your PageVault is Empty",
+                            text = if (searchQuery.isNotBlank()) "No matching articles found for '$searchQuery'" else "Your PageVault is Empty",
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Insert a page above or use Chrome -> Share -> PageVault",
+                            text = if (searchQuery.isNotBlank()) "Try searching different keywords, tags, or domain names" else "Insert a page above or use Chrome -> Share -> PageVault",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
@@ -288,7 +460,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
                     if (isGroupedByWebsite) {
-                        groupedPages.forEach { (siteGroup, sitePages) ->
+                        groupedChains.forEach { (siteGroup, siteChains) ->
                             stickyHeader {
                                 Surface(
                                     color = MaterialTheme.colorScheme.background.copy(alpha = 0.95f),
@@ -308,7 +480,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "${siteGroup.uppercase()} (${sitePages.size})",
+                                            text = "${siteGroup.uppercase()} (${siteChains.size})",
                                             style = MaterialTheme.typography.labelLarge,
                                             fontWeight = FontWeight.ExtraBold,
                                             color = getDomainAccentColor(siteGroup)
@@ -316,8 +488,102 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                     }
                                 }
                             }
-                            items(sitePages, key = { it.uuid }) { page ->
-                                VaultArticleCard(
+                            items(siteChains, key = { it.latestPage.uuid }) { chain ->
+                                val page = chain.latestPage
+                                if (isOneSentenceView) {
+                                    VaultCompactRow(
+                                        page = page,
+                                        isSelected = selectedUuids.contains(page.uuid),
+                                        onCardClick = {
+                                            if (selectedUuids.isNotEmpty()) {
+                                                viewModel.toggleSelection(page.uuid)
+                                            } else {
+                                                val intent = Intent(context, OfflineMhtmlViewerActivity::class.java).apply {
+                                                    putExtra("MHTML_PATH", page.mhtmlFilePath)
+                                                    putExtra("SCREENSHOT_PATH", page.screenshotFilePath)
+                                                    putExtra("PAGE_TITLE", page.title)
+                                                    putExtra("ORIGINAL_URL", page.originalUrl)
+                                                }
+                                                context.startActivity(intent)
+                                            }
+                                        },
+                                        onCardLongClick = { viewModel.toggleSelection(page.uuid) },
+                                        onExportPdf = {
+                                            scope.launch {
+                                                val pdf = exportHelper.generateSinglePagePdf(page)
+                                                if (pdf != null) {
+                                                    exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                                } else {
+                                                    snackbarHostState.showSnackbar("Failed to generate PDF")
+                                                }
+                                            }
+                                        },
+                                        onExportMarkdown = {
+                                            scope.launch {
+                                                val md = exportHelper.generateSinglePageMarkdown(page)
+                                                if (md != null) {
+                                                    exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                                } else {
+                                                    snackbarHostState.showSnackbar("Failed to generate Markdown")
+                                                }
+                                            }
+                                        },
+                                        onDelete = { viewModel.deleteArchive(page) }
+                                    )
+                                } else {
+                                    VaultArticleCard(
+                                        page = page,
+                                        revisions = chain.revisions,
+                                        isSelected = selectedUuids.contains(page.uuid),
+                                        captureStageText = captureStageText,
+                                        onCardClick = {
+                                            if (selectedUuids.isNotEmpty()) {
+                                                viewModel.toggleSelection(page.uuid)
+                                            } else {
+                                                val intent = Intent(context, OfflineMhtmlViewerActivity::class.java).apply {
+                                                    putExtra("MHTML_PATH", page.mhtmlFilePath)
+                                                    putExtra("SCREENSHOT_PATH", page.screenshotFilePath)
+                                                    putExtra("PAGE_TITLE", page.title)
+                                                    putExtra("ORIGINAL_URL", page.originalUrl)
+                                                }
+                                                context.startActivity(intent)
+                                            }
+                                        },
+                                        onCardLongClick = { viewModel.toggleSelection(page.uuid) },
+                                        onExportPdf = {
+                                            scope.launch {
+                                                val pdf = exportHelper.generateSinglePagePdf(page)
+                                                if (pdf != null) {
+                                                    exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                                } else {
+                                                    snackbarHostState.showSnackbar("Failed to generate PDF")
+                                                }
+                                            }
+                                        },
+                                        onDelete = { viewModel.deleteArchive(page) },
+                                        onRecaptureNoJs = {
+                                            viewModel.captureAndIndexUrl(page.originalUrl, spoofCrawler = true, disableJs = true)
+                                        },
+                                        onRepull = { viewModel.repullAndCompareArticle(page) },
+                                        onExportMarkdown = {
+                                            scope.launch {
+                                                val md = exportHelper.generateSinglePageMarkdown(page)
+                                                if (md != null) {
+                                                    exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                                } else {
+                                                    snackbarHostState.showSnackbar("Failed to generate Markdown")
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(articleChains, key = { it.latestPage.uuid }) { chain ->
+                            val page = chain.latestPage
+                            if (isOneSentenceView) {
+                                VaultCompactRow(
                                     page = page,
                                     isSelected = selectedUuids.contains(page.uuid),
                                     onCardClick = {
@@ -339,6 +605,50 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                             val pdf = exportHelper.generateSinglePagePdf(page)
                                             if (pdf != null) {
                                                 exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                            } else {
+                                                snackbarHostState.showSnackbar("Failed to generate PDF")
+                                            }
+                                        }
+                                    },
+                                    onExportMarkdown = {
+                                        scope.launch {
+                                            val md = exportHelper.generateSinglePageMarkdown(page)
+                                            if (md != null) {
+                                                exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                            } else {
+                                                snackbarHostState.showSnackbar("Failed to generate Markdown")
+                                            }
+                                        }
+                                    },
+                                    onDelete = { viewModel.deleteArchive(page) }
+                                )
+                            } else {
+                                VaultArticleCard(
+                                    page = page,
+                                    revisions = chain.revisions,
+                                    isSelected = selectedUuids.contains(page.uuid),
+                                    captureStageText = captureStageText,
+                                    onCardClick = {
+                                        if (selectedUuids.isNotEmpty()) {
+                                            viewModel.toggleSelection(page.uuid)
+                                        } else {
+                                            val intent = Intent(context, OfflineMhtmlViewerActivity::class.java).apply {
+                                                putExtra("MHTML_PATH", page.mhtmlFilePath)
+                                                putExtra("SCREENSHOT_PATH", page.screenshotFilePath)
+                                                putExtra("PAGE_TITLE", page.title)
+                                                putExtra("ORIGINAL_URL", page.originalUrl)
+                                            }
+                                            context.startActivity(intent)
+                                        }
+                                    },
+                                    onCardLongClick = { viewModel.toggleSelection(page.uuid) },
+                                    onExportPdf = {
+                                        scope.launch {
+                                            val pdf = exportHelper.generateSinglePagePdf(page)
+                                            if (pdf != null) {
+                                                exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                            } else {
+                                                snackbarHostState.showSnackbar("Failed to generate PDF")
                                             }
                                         }
                                     },
@@ -352,53 +662,13 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                             val md = exportHelper.generateSinglePageMarkdown(page)
                                             if (md != null) {
                                                 exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                            } else {
+                                                snackbarHostState.showSnackbar("Failed to generate Markdown")
                                             }
                                         }
                                     }
                                 )
                             }
-                        }
-                    } else {
-                        items(pages, key = { it.uuid }) { page ->
-                            VaultArticleCard(
-                                page = page,
-                                isSelected = selectedUuids.contains(page.uuid),
-                                onCardClick = {
-                                    if (selectedUuids.isNotEmpty()) {
-                                        viewModel.toggleSelection(page.uuid)
-                                    } else {
-                                        val intent = Intent(context, OfflineMhtmlViewerActivity::class.java).apply {
-                                            putExtra("MHTML_PATH", page.mhtmlFilePath)
-                                            putExtra("SCREENSHOT_PATH", page.screenshotFilePath)
-                                            putExtra("PAGE_TITLE", page.title)
-                                            putExtra("ORIGINAL_URL", page.originalUrl)
-                                        }
-                                        context.startActivity(intent)
-                                    }
-                                },
-                                onCardLongClick = { viewModel.toggleSelection(page.uuid) },
-                                onExportPdf = {
-                                    scope.launch {
-                                        val pdf = exportHelper.generateSinglePagePdf(page)
-                                        if (pdf != null) {
-                                            exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
-                                        }
-                                    }
-                                },
-                                onDelete = { viewModel.deleteArchive(page) },
-                                onRecaptureNoJs = {
-                                    viewModel.captureAndIndexUrl(page.originalUrl, spoofCrawler = true, disableJs = true)
-                                },
-                                onRepull = { viewModel.repullAndCompareArticle(page) },
-                                onExportMarkdown = {
-                                    scope.launch {
-                                        val md = exportHelper.generateSinglePageMarkdown(page)
-                                        if (md != null) {
-                                            exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
-                                        }
-                                    }
-                                }
-                            )
                         }
                     }
                 }
@@ -428,6 +698,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
             onSelectAiEdgeModel = { id, path -> viewModel.selectAiEdgeModel(id, path) },
             currentModel = currentAiModel,
             onModelSelected = { viewModel.setAiModel(it) },
+            onExportDiagnosticLog = { exportHelper.shareTroubleshootingLog() },
             onDismiss = { showSettingsDialog = false }
         )
     }

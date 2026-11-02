@@ -2,4 +2,7 @@
 <paths>
     <files-path name="archives" path="archives/" />
     <files-path name="exports" path="exports/" />
+    <cache-path name="cache_exports" path="exports/" />
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
 </paths>

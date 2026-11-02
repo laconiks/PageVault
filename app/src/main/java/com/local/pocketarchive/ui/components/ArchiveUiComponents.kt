@@ -59,7 +59,9 @@ fun getDomainAccentColor(siteOrUrl: String): Color {
 @Composable
 fun VaultArticleCard(
     page: ArchivedPage,
+    revisions: List<ArchivedPage> = emptyList(),
     isSelected: Boolean,
+    captureStageText: String = "Step 1/4: Connecting & bypassing paywall...",
     onCardClick: () -> Unit,
     onCardLongClick: () -> Unit,
     onExportPdf: () -> Unit,
@@ -70,6 +72,7 @@ fun VaultArticleCard(
 ) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
+    var showRevisionsAccordion by remember { mutableStateOf(false) }
 
     val domainLabel = remember(page.siteName, page.originalUrl) {
         page.siteName.ifBlank {
@@ -109,242 +112,534 @@ fun VaultArticleCard(
             )
         )
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            // Top Header Row: Domain Badge + Generation Time in Seconds + Date
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isSelected) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Selected",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp).padding(end = 6.dp)
-                        )
-                    }
-                    Surface(
-                        color = accentColor.copy(alpha = 0.16f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(0.5.dp, accentColor.copy(alpha = 0.6f))
-                    ) {
-                        Text(
-                            text = domainLabel.uppercase(),
-                            color = accentColor,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    // Generation Duration Badge in Seconds
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = secondsStr,
-                            color = MaterialTheme.colorScheme.secondary,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                        )
-                    }
-                    if (page.versionNumber > 1) {
-                        Spacer(modifier = Modifier.width(6.dp))
+        Column {
+            // Restore Wide Article Preview Banner Image (155.dp full-width)
+            if (!page.screenshotFilePath.isNullOrBlank() && File(page.screenshotFilePath).exists()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(155.dp)
+                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    AsyncImage(
+                        model = File(page.screenshotFilePath),
+                        contentDescription = "Article Preview",
+                        contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    // Cyber-Vault gradient bottom scrim to blend smoothly into card body
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                        MaterialTheme.colorScheme.surface
+                                    ),
+                                    startY = 60f
+                                )
+                            )
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.padding(14.dp)) {
+                // Top Header Row: Domain Badge + Generation Time in Seconds + Version + Date
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Selected",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp).padding(end = 6.dp)
+                            )
+                        }
                         Surface(
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            color = accentColor.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(0.5.dp, accentColor.copy(alpha = 0.6f))
+                        ) {
+                            Text(
+                                text = domainLabel.uppercase(),
+                                color = accentColor,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        // Generation Duration Badge in Seconds
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                             shape = RoundedCornerShape(6.dp)
                         ) {
                             Text(
-                                text = "v${page.versionNumber} • CHILD REVISION",
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                text = secondsStr,
+                                color = MaterialTheme.colorScheme.secondary,
                                 style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
+                                fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                             )
                         }
+                        if (page.versionNumber > 1) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "v${page.versionNumber} REVISION",
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
                     }
+
+                    Text(
+                        text = dateFormatted,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Title and Original URL
                 Text(
-                    text = dateFormatted,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = page.title,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 20.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = if (expanded) 5 else 2,
+                    overflow = TextOverflow.Ellipsis
                 )
-            }
 
-            Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
-            // Main Row: Title, Summary, and Thumbnail
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = page.title,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            lineHeight = 20.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = if (expanded) 5 else 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    // Clickable Original URL -> Opens directly in Google Chrome / Browser
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable {
-                                runCatching {
-                                    val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(page.originalUrl)).apply {
-                                        setPackage("com.android.chrome")
+                // Clickable Original URL -> Opens directly in Google Chrome / Browser
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable {
+                            runCatching {
+                                val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(page.originalUrl)).apply {
+                                    setPackage("com.android.chrome")
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                try {
+                                    context.startActivity(chromeIntent)
+                                } catch (_: Exception) {
+                                    val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(page.originalUrl)).apply {
                                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     }
-                                    try {
-                                        context.startActivity(chromeIntent)
-                                    } catch (_: Exception) {
-                                        val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(page.originalUrl)).apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-                                        context.startActivity(fallbackIntent)
-                                    }
+                                    context.startActivity(fallbackIntent)
                                 }
                             }
-                            .padding(vertical = 2.dp)
+                        }
+                        .padding(vertical = 2.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.OpenInBrowser,
+                        contentDescription = "Open in Chrome",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = page.originalUrl,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            textDecoration = TextDecoration.Underline
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Dynamic Plain-English Capture Status with Helper Subtitle
+                if (page.status == CaptureStatus.PENDING) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.OpenInBrowser,
-                            contentDescription = "Open in Chrome",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = captureStageText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "DOM locking freezes all styles, scripts, and media into an RFC-compliant snapshot for 100% offline access with zero server dependency.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    val summaryPrefix = buildString {
+                        if (domainLabel.isNotBlank()) append(domainLabel)
+                        if (page.author.isNotBlank()) append(" • ${page.author}")
+                        if (isNotEmpty()) append(" — ")
+                    }
+                    val bodySummary = page.aiSummary.ifBlank { page.extractedTextSummary }
+                    if (bodySummary.isNotBlank()) {
                         Text(
-                            text = page.originalUrl,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                textDecoration = TextDecoration.Underline
-                            ),
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
+                            text = "$summaryPrefix$bodySummary",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = if (expanded) 12 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    if (page.changeDiffSummary.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CompareArrows,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Diff: ${page.changeDiffSummary}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = if (expanded) 4 else 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
                 }
 
-                if (!page.screenshotFilePath.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.width(12.dp))
-                    AsyncImage(
-                        model = File(page.screenshotFilePath),
-                        contentDescription = "Snapshot preview",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(68.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Status or AI Summary
-            if (page.status == CaptureStatus.PENDING) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Freezing DOM & running local AI edge summary...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            } else {
-                val summaryPrefix = buildString {
-                    if (domainLabel.isNotBlank()) append(domainLabel)
-                    if (page.author.isNotBlank()) append(" • ${page.author}")
-                    if (isNotEmpty()) append(" — ")
-                }
-                val bodySummary = page.aiSummary.ifBlank { page.extractedTextSummary }
-                if (bodySummary.isNotBlank()) {
-                    Text(
-                        text = "$summaryPrefix$bodySummary",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = if (expanded) 12 else 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                if (page.changeDiffSummary.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(4.dp))
+                // Collapsed Version History & AI Diff Accordion (Revisions grouped inside main card)
+                if (revisions.size > 1) {
+                    Spacer(modifier = Modifier.height(8.dp))
                     Surface(
-                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showRevisionsAccordion = !showRevisionsAccordion }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.History,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "🕒 Version History & AI Diff (${revisions.size} Versions)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Icon(
+                                imageVector = if (showRevisionsAccordion) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    if (showRevisionsAccordion) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            revisions.forEach { rev ->
+                                val isCurrent = rev.uuid == page.uuid
+                                val revDate = SimpleDateFormat("MMM d, yyyy • h:mm a", Locale.getDefault()).format(Date(rev.timestampEpochMillis))
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                                    else MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(
+                                        0.5.dp,
+                                        if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(
+                                                    text = "v${rev.versionNumber}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                                )
+                                                if (isCurrent) {
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        text = "• CURRENT",
+                                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                text = revDate,
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (rev.changeDiffSummary.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "AI Diff vs previous: ${rev.changeDiffSummary}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.tertiary
+                                            )
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                            horizontalArrangement = Arrangement.End
+                                        ) {
+                                            TextButton(
+                                                onClick = {
+                                                    val intent = Intent(context, com.local.pocketarchive.ui.OfflineMhtmlViewerActivity::class.java).apply {
+                                                        putExtra("MHTML_PATH", rev.mhtmlFilePath)
+                                                        putExtra("SCREENSHOT_PATH", rev.screenshotFilePath)
+                                                        putExtra("PAGE_TITLE", rev.title)
+                                                        putExtra("ORIGINAL_URL", rev.originalUrl)
+                                                    }
+                                                    context.startActivity(intent)
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                            ) {
+                                                Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("View Snapshot", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // AI Tags
+                if (page.aiTags.isNotEmpty()) {
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        page.aiTags.take(4).forEach { tag ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = CircleShape
+                            ) {
+                                Text(
+                                    text = "#$tag",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Clear, Self-Explanatory Action Pills Row
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // 📄 PDF Snapshot Pill
+                    Surface(
+                        onClick = onExportPdf,
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CompareArrows,
+                                Icons.Default.PictureAsPdf,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(14.dp)
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Diff: ${page.changeDiffSummary}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = if (expanded) 4 else 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column {
+                                Text(
+                                    "📄 PDF Snapshot",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    "Printable layout",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
-                }
-            }
 
-            // Tags + Quick Action Footer
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                FlowRow(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    page.aiTags.take(4).forEach { tag ->
+                    // 📝 AI Markdown Pill
+                    if (onExportMarkdown != null) {
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = CircleShape
+                            onClick = onExportMarkdown,
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
                         ) {
-                            Text(
-                                text = "#$tag",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Description,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(
+                                        "📝 AI Markdown",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "Text for AI word-mapping",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
-                }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 🔄 Pull v$nextVersion Pill
+                    if (onRepull != null) {
+                        val nextV = (revisions.maxOfOrNull { it.versionNumber } ?: page.versionNumber) + 1
+                        Surface(
+                            onClick = onRepull,
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Sync,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "🔄 Pull v$nextV",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+
+                    // ⚡ No-JS Pill
+                    if (onRecaptureNoJs != null) {
+                        Surface(
+                            onClick = onRecaptureNoJs,
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.FlashOn,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    "⚡ No-JS",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+
+                    // Expand / Collapse Summary toggle
                     IconButton(
                         onClick = { expanded = !expanded },
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -352,67 +647,126 @@ fun VaultArticleCard(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    if (onRepull != null) {
-                        IconButton(
-                            onClick = onRepull,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = "Re-pull & Compare Child Version",
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    if (onRecaptureNoJs != null) {
-                        IconButton(
-                            onClick = onRecaptureNoJs,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Recapture (No-JS Bypass)",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    if (onExportMarkdown != null) {
-                        IconButton(
-                            onClick = onExportMarkdown,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Description,
-                                contentDescription = "Export Markdown",
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = onExportPdf,
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PictureAsPdf,
-                            contentDescription = "Export PDF",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+
+                    // Delete Pill
                     IconButton(
                         onClick = onDelete,
-                        modifier = Modifier.size(28.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.DeleteOutline,
+                            Icons.Default.DeleteOutline,
                             contentDescription = "Delete",
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(18.dp)
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Global 1-Sentence Compact View Row:
+ * Collapses the article card into a sleek 1-sentence headline + summary row
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun VaultCompactRow(
+    page: ArchivedPage,
+    isSelected: Boolean,
+    onCardClick: () -> Unit,
+    onCardLongClick: () -> Unit,
+    onExportPdf: () -> Unit,
+    onExportMarkdown: (() -> Unit)? = null,
+    onDelete: () -> Unit
+) {
+    val domainLabel = remember(page.siteName, page.originalUrl) {
+        page.siteName.ifBlank {
+            runCatching { Uri.parse(page.originalUrl).host?.removePrefix("www.") ?: "Web" }.getOrDefault("Web")
+        }
+    }
+    val accentColor = remember(domainLabel) { getDomainAccentColor(domainLabel) }
+    val oneSentenceSummary = remember(page.aiSummary, page.extractedTextSummary) {
+        val raw = page.aiSummary.ifBlank { page.extractedTextSummary }
+        val firstSentence = raw.split(Regex("(?<=[.!?])\\s+")).firstOrNull()?.trim().orEmpty()
+        if (firstSentence.isNotBlank()) firstSentence else "Saved offline page."
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = onCardClick,
+                onLongClick = onCardLongClick
+            ),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        else MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+        border = BorderStroke(
+            width = if (isSelected) 2.dp else 0.8.dp,
+            color = if (isSelected) MaterialTheme.colorScheme.primary else accentColor.copy(alpha = 0.4f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = accentColor,
+                modifier = Modifier.size(10.dp)
+            ) {}
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = domainLabel.uppercase(),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        fontWeight = FontWeight.ExtraBold,
+                        color = accentColor
+                    )
+                    if (page.versionNumber > 1) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "v${page.versionNumber}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+                Text(
+                    text = page.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = oneSentenceSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onExportPdf, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.PictureAsPdf, contentDescription = "PDF", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                }
+                if (onExportMarkdown != null) {
+                    IconButton(onClick = onExportMarkdown, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Description, contentDescription = "Markdown", tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                    }
+                }
+                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -529,6 +883,7 @@ fun SettingsAndAboutDialog(
     onSelectAiEdgeModel: (String, String?) -> Unit = { _, _ -> },
     currentModel: AiEdgeModel = AiEdgeModel.GEMMA_2B,
     onModelSelected: (AiEdgeModel) -> Unit = {},
+    onExportDiagnosticLog: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var customPathInput by remember { mutableStateOf("") }
@@ -663,7 +1018,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About PageVault v0.6", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About PageVault v0.6.5", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "PageVault is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,
@@ -694,6 +1049,22 @@ fun SettingsAndAboutDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+                HorizontalDivider()
+                Text("Diagnostics & Troubleshooting", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Export on-device troubleshooting logs containing device hardware make/model and capture events with timestamps.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedButton(
+                    onClick = onExportDiagnosticLog,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Export Troubleshooting Log")
                 }
             }
         },

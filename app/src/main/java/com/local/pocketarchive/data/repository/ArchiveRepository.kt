@@ -33,7 +33,8 @@ class ArchiveRepository(
         rawUrl: String,
         spoofCrawler: Boolean = true,
         disableJs: Boolean = false,
-        preferredModel: AiEdgeModel = aiProcessor.currentModel
+        preferredModel: AiEdgeModel = aiProcessor.currentModel,
+        onStageUpdate: ((String) -> Unit)? = null
     ): Result<ArchivedPage> = runCatching {
         val normalizedUrl = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
             rawUrl.trim()
@@ -58,7 +59,13 @@ class ArchiveRepository(
         )
         archiveDao.insert(initialEntity)
 
-        val rawCapture = captureManager.captureUrl(uuid, normalizedUrl, spoofCrawler, disableJs).getOrElse { error ->
+        val rawCapture = captureManager.captureUrl(
+            uuid = uuid,
+            targetUrl = normalizedUrl,
+            spoofCrawler = spoofCrawler,
+            disableJs = disableJs,
+            onStageUpdate = onStageUpdate
+        ).getOrElse { error ->
             val failed = initialEntity.copy(
                 status = CaptureStatus.FAILED,
                 aiSummary = "Capture failed: ${error.localizedMessage ?: "Timeout"}"
@@ -76,7 +83,10 @@ class ArchiveRepository(
             )
         } else ""
 
+        onStageUpdate?.invoke("Step 3/4: Extracting article text & OCR...")
         val ocrText = aiProcessor.extractOcrFromScreenshot(rawCapture.fullScreenshotFile.absolutePath)
+
+        onStageUpdate?.invoke("Step 4/4: Writing offline summary...")
         val aiResult = aiProcessor.summarizeAndTag(
             title = rawCapture.resolvedTitle,
             rawText = rawCapture.extractedDomText,

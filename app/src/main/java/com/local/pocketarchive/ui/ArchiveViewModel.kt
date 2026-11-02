@@ -132,6 +132,71 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         _selectedUuids.value = emptySet()
     }
 
+    private val _captureStageText = MutableStateFlow("Step 1/4: Connecting & bypassing paywall...")
+    val captureStageText: StateFlow<String> = _captureStageText.asStateFlow()
+
+    private val _isOneSentenceView = MutableStateFlow(false)
+    val isOneSentenceView: StateFlow<Boolean> = _isOneSentenceView.asStateFlow()
+
+    fun toggleOneSentenceView() {
+        _isOneSentenceView.value = !_isOneSentenceView.value
+    }
+
+    private val _queuedUrls = MutableStateFlow<List<String>>(emptyList())
+    val queuedUrls: StateFlow<List<String>> = _queuedUrls.asStateFlow()
+
+    fun addToQueue(rawUrl: String) {
+        val cleanUrl = rawUrl.trim().let {
+            if (!it.startsWith("http://") && !it.startsWith("https://")) "https://$it" else it
+        }
+        if (cleanUrl.isNotBlank() && !_queuedUrls.value.contains(cleanUrl)) {
+            _queuedUrls.update { it + cleanUrl }
+            _uiAlerts.tryEmit("Queued (${_queuedUrls.value.size} total): $cleanUrl")
+        }
+    }
+
+    fun removeFromQueue(url: String) {
+        _queuedUrls.update { it - url }
+    }
+
+    fun clearQueue() {
+        _queuedUrls.value = emptyList()
+    }
+
+    fun processQueue() {
+        val queue = _queuedUrls.value
+        if (queue.isEmpty() || _isCapturing.value) return
+
+        viewModelScope.launch {
+            _isCapturing.value = true
+            var count = 0
+            val total = queue.size
+
+            for (url in queue) {
+                _queuedUrls.update { it - url }
+                count++
+                val queuePrefix = "Queue ($count/$total): "
+                _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & bypassing paywall..."
+                val startMs = System.currentTimeMillis()
+
+                repository.captureAndIndexUrl(
+                    rawUrl = url,
+                    spoofCrawler = true,
+                    disableJs = false,
+                    preferredModel = _aiModel.value,
+                    onStageUpdate = { stage -> _captureStageText.value = "$queuePrefix$stage" }
+                ).onSuccess {
+                    val durationMs = System.currentTimeMillis() - startMs
+                    val sec = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                    _uiAlerts.tryEmit("Vaulted [$count/$total] in $sec")
+                }.onFailure { e ->
+                    _uiAlerts.tryEmit("Failed [$count/$total]: ${e.localizedMessage ?: "Error"}")
+                }
+            }
+            _isCapturing.value = false
+        }
+    }
+
     fun captureAndIndexUrl(
         rawUrl: String,
         spoofCrawler: Boolean = true,
@@ -144,17 +209,22 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             _isCapturing.value = true
+            _captureStageText.value = "Step 1/4: Connecting & bypassing paywall..."
             val startTimeMs = System.currentTimeMillis()
 
-            repository.captureAndIndexUrl(cleanUrl, spoofCrawler, disableJs, _aiModel.value)
-                .onSuccess {
-                    val durationMs = System.currentTimeMillis() - startTimeMs
-                    val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
-                    _uiAlerts.tryEmit("Generated in $secondsFormatted")
-                }
-                .onFailure { e ->
-                    _uiAlerts.tryEmit("Error: ${e.localizedMessage ?: "Capture failed"}")
-                }
+            repository.captureAndIndexUrl(
+                rawUrl = cleanUrl,
+                spoofCrawler = spoofCrawler,
+                disableJs = disableJs,
+                preferredModel = _aiModel.value,
+                onStageUpdate = { stage -> _captureStageText.value = stage }
+            ).onSuccess {
+                val durationMs = System.currentTimeMillis() - startTimeMs
+                val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                _uiAlerts.tryEmit("Generated in $secondsFormatted")
+            }.onFailure { e ->
+                _uiAlerts.tryEmit("Error: ${e.localizedMessage ?: "Capture failed"}")
+            }
             _isCapturing.value = false
         }
     }
@@ -163,25 +233,29 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         val rootUuid = existingPage.parentUuid ?: existingPage.uuid
         viewModelScope.launch {
             _isCapturing.value = true
+            _captureStageText.value = "Step 1/4: Connecting & bypassing paywall..."
             val startTimeMs = System.currentTimeMillis()
             val nextVersion = dao.getVersionCountForChain(rootUuid) + 1
 
-            val pendingChild = ArchivedPage(
+            val pendingRevision = ArchivedPage(
                 originalUrl = existingPage.originalUrl,
                 title = "Re-Pulling v$nextVersion: ${existingPage.title}",
                 parentUuid = rootUuid,
                 versionNumber = nextVersion,
                 status = CaptureStatus.PENDING
             )
-            dao.upsertPage(pendingChild)
+            dao.upsertPage(pendingRevision)
 
             try {
-                val snapshot = captureManager.captureUrlSnapshot(existingPage.originalUrl, pendingChild.uuid)
+                _captureStageText.value = "Step 2/4: Locking page layout & capturing preview image..."
+                val snapshot = captureManager.captureUrlSnapshot(existingPage.originalUrl, pendingRevision.uuid)
                 if (snapshot != null) {
+                    _captureStageText.value = "Step 3/4: Extracting article text & OCR..."
                     val ocrText = snapshot.screenshotPath?.let { path ->
                         aiProcessor.extractOcrFromScreenshot(path)
                     } ?: ""
 
+                    _captureStageText.value = "Step 4/4: Writing offline summary..."
                     val aiResult = aiProcessor.summarizeAndTag(
                         title = snapshot.pageTitle,
                         rawText = snapshot.extractedDomText,
@@ -198,7 +272,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
                     val durationMs = System.currentTimeMillis() - startTimeMs
                     val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
 
-                    val completedChild = pendingChild.copy(
+                    val completedRevision = pendingRevision.copy(
                         title = snapshot.pageTitle.ifBlank { existingPage.title },
                         siteName = snapshot.siteName.ifBlank { existingPage.siteName },
                         author = snapshot.author.ifBlank { existingPage.author },
@@ -215,15 +289,15 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
                         aiModelUsed = aiResult.modelLabel,
                         status = CaptureStatus.COMPLETED
                     )
-                    dao.upsertPage(completedChild)
+                    dao.upsertPage(completedRevision)
                     dao.rebuildFts()
-                    _uiAlerts.tryEmit("Generated Child v$nextVersion + AI Diff in $secondsFormatted")
+                    _uiAlerts.tryEmit("Generated v$nextVersion + AI Diff in $secondsFormatted")
                 } else {
-                    dao.deletePage(pendingChild)
+                    dao.deletePage(pendingRevision)
                     _uiAlerts.tryEmit("Re-pull failed for URL")
                 }
             } catch (e: Exception) {
-                dao.deletePage(pendingChild)
+                dao.deletePage(pendingRevision)
                 _uiAlerts.tryEmit("Error comparing article versions")
             } finally {
                 _isCapturing.value = false

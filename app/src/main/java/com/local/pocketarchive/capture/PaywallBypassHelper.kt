@@ -1,21 +1,26 @@
 package com.local.pocketarchive.capture
 
-import android.webkit.WebSettings
 import android.webkit.WebView
+import com.local.pocketarchive.util.DiagnosticLogHelper
 
 object PaywallBypassHelper {
+
+    private const val TAG = "PaywallBypass"
+
+    const val CHROME_MOBILE_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
     const val GOOGLEBOT_USER_AGENT =
         "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
     val SPOOFED_HEADERS = mapOf(
-        "Referer" to "https://www.google.com/",
-        "X-Forwarded-For" to "66.249.66.1"
+        "Referer" to "https://www.google.com/"
     )
 
     /**
      * Configures WebView settings prior to loadUrl().
-     * @param spoofCrawler If true, sets User-Agent to Googlebot.
+     * Uses standard Chrome Mobile User-Agent with Google Referer header to bypass bot blocks.
+     * @param spoofCrawler If true, sets standard headers with Google Referer.
      * @param disableJs If true, disables JavaScript to stop client-side paywall truncation scripts.
      */
     fun configureWebViewForCapture(
@@ -23,14 +28,11 @@ object PaywallBypassHelper {
         spoofCrawler: Boolean = true,
         disableJs: Boolean = false
     ) {
+        DiagnosticLogHelper.log(TAG, "Configuring WebView settings (jsEnabled=${!disableJs}, spoofCrawler=$spoofCrawler, UA=ChromeMobile)")
         webView.settings.apply {
             javaScriptEnabled = !disableJs
             domStorageEnabled = true
-            if (spoofCrawler) {
-                userAgentString = GOOGLEBOT_USER_AGENT
-            } else {
-                userAgentString = WebSettings.getDefaultUserAgent(webView.context)
-            }
+            userAgentString = CHROME_MOBILE_USER_AGENT
         }
     }
 
@@ -108,6 +110,7 @@ object PaywallBypassHelper {
         """.trimIndent()
 
         webView.evaluateJavascript(unlockScript) {
+            DiagnosticLogHelper.log(TAG, "DOM sanitization and unlock script finished")
             // Small delay (150ms) to allow DOM layout reflow before saveWebArchive / PDF canvas draw
             webView.postDelayed({ onComplete() }, 150L)
         }

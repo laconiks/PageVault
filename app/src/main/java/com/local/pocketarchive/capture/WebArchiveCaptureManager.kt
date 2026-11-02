@@ -12,6 +12,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.local.pocketarchive.util.DiagnosticLogHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -39,11 +40,13 @@ data class RawCaptureResult(
 class WebArchiveCaptureManager(private val context: Context) {
 
     companion object {
+        private const val TAG = "WebArchiveCapture"
         private const val VIEWPORT_WIDTH_PX = 1080
         private const val DEFAULT_VIEWPORT_HEIGHT_PX = 2400
         private const val MAX_CAPTURE_HEIGHT_PX = 12000
         private const val THUMBNAIL_HEIGHT_PX = 720
         private const val CAPTURE_TIMEOUT_MS = 60_000L
+        private const val PAGE_LOAD_TIMEOUT_MS = 12_000L
 
         private val DOM_STABILIZATION_JS = """
             (function() {
@@ -78,9 +81,12 @@ class WebArchiveCaptureManager(private val context: Context) {
         uuid: String,
         targetUrl: String,
         spoofCrawler: Boolean = true,
-        disableJs: Boolean = false
+        disableJs: Boolean = false,
+        onStageUpdate: ((String) -> Unit)? = null
     ): Result<RawCaptureResult> = runCatching {
         withTimeout(CAPTURE_TIMEOUT_MS) {
+            onStageUpdate?.invoke("Step 1/4: Connecting & bypassing paywall...")
+            DiagnosticLogHelper.log(TAG, "Starting capture for $targetUrl [uuid=$uuid, spoofCrawler=$spoofCrawler, disableJs=$disableJs]")
             val archiveDir = File(context.filesDir, "archives/$uuid").apply { mkdirs() }
             val mhtmlFile = File(archiveDir, "snapshot_$uuid.mht")
             val fullScreenshotFile = File(archiveDir, "snapshot_$uuid.webp")
@@ -97,6 +103,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     measure(widthSpec, initHeightSpec)
                     layout(0, 0, VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX)
                 }
+
                 PaywallBypassHelper.configureWebViewForCapture(
                     webView = webView,
                     spoofCrawler = spoofCrawler,
@@ -104,28 +111,43 @@ class WebArchiveCaptureManager(private val context: Context) {
                 )
 
                 try {
-                    // Wait up to 18s for page load (news sites with ad trackers may never fire 100% onPageFinished)
-                    withTimeoutOrNull(18_000L) {
+                    // 12-second DOM-hydration fallback: ad scripts/trackers never hang capture
+                    DiagnosticLogHelper.log(TAG, "Awaiting page readiness (max ${PAGE_LOAD_TIMEOUT_MS / 1000}s)...")
+                    val loadSuccess = withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MS) {
                         awaitPageLoaded(webView, targetUrl, spoofCrawler)
+                        true
                     }
-                    delay(800)
+                    if (loadSuccess == null) {
+                        DiagnosticLogHelper.log(TAG, "12s load timeout reached; proceeding with DOM hydration and capture fallback")
+                    } else {
+                        DiagnosticLogHelper.log(TAG, "Page load completed within 12s limit")
+                    }
+
+                    delay(500)
 
                     if (!disableJs) {
-                        for (offset in 0..3000 step 1000) {
+                        DiagnosticLogHelper.log(TAG, "Simulating user scroll and unmasking DOM")
+                        for (offset in 0..2000 step 1000) {
                             webView.evaluateJavascript("window.scrollTo(0, $offset);", null)
-                            delay(150)
+                            delay(100)
                         }
                         webView.evaluateJavascript("window.scrollTo(0, 0);", null)
-                        delay(350)
+                        delay(200)
 
-                        suspendCancellableCoroutine<Unit> { cont ->
-                            PaywallBypassHelper.unlockAndSanitizeDom(webView) {
-                                if (cont.isActive) cont.resume(Unit)
+                        withTimeoutOrNull(3000L) {
+                            suspendCancellableCoroutine<Unit> { cont ->
+                                PaywallBypassHelper.unlockAndSanitizeDom(webView) {
+                                    if (cont.isActive) cont.resume(Unit)
+                                }
                             }
                         }
                     }
 
-                    val base64Payload = evaluateJsSuspend(webView, DOM_STABILIZATION_JS)
+                    DiagnosticLogHelper.log(TAG, "Extracting DOM stabilization payload")
+                    val base64Payload = withTimeoutOrNull(4000L) {
+                        evaluateJsSuspend(webView, DOM_STABILIZATION_JS)
+                    } ?: ""
+
                     val decodedJson = runCatching {
                         val cleanB64 = base64Payload.trim().removeSurrounding("\"")
                         if (cleanB64.isNotBlank()) {
@@ -142,26 +164,44 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val measuredHeight = parsed.optInt("scrollHeight", DEFAULT_VIEWPORT_HEIGHT_PX)
                         .coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
 
-                    // Save MHTML archive with a 10s safety timeout
-                    withTimeoutOrNull(10_000L) {
+                    DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', words=$wordCount, measuredHeight=$measuredHeight")
+
+                    onStageUpdate?.invoke("Step 2/4: Locking page layout & capturing preview image...")
+                    // Save MHTML archive with a 6s safety timeout
+                    DiagnosticLogHelper.log(TAG, "Saving MHTML web archive...")
+                    withTimeoutOrNull(6_000L) {
                         saveWebArchiveSuspend(webView, mhtmlFile.absolutePath)
                     }
-                    if (!mhtmlFile.exists()) {
-                        mhtmlFile.writeText("<html><head><title>$resolvedTitle</title></head><body><p>$extractedText</p></body></html>")
+                    if (!mhtmlFile.exists() || mhtmlFile.length() == 0L) {
+                        DiagnosticLogHelper.log(TAG, "MHTML missing/empty, generating synthetic HTML archive")
+                        mhtmlFile.writeText("<html><head><title>$resolvedTitle</title></head><body><h1>$resolvedTitle</h1><p>$extractedText</p></body></html>")
+                    } else {
+                        DiagnosticLogHelper.log(TAG, "MHTML archive saved successfully (${mhtmlFile.length()} bytes)")
                     }
 
+                    // ALWAYS capture screenshot + thumbnail even if page loaded slowly
+                    DiagnosticLogHelper.log(TAG, "Capturing WebView screenshot ($VIEWPORT_WIDTH_PX x $measuredHeight)...")
                     val finalHeightSpec = View.MeasureSpec.makeMeasureSpec(measuredHeight, View.MeasureSpec.EXACTLY)
                     webView.measure(widthSpec, finalHeightSpec)
                     webView.layout(0, 0, VIEWPORT_WIDTH_PX, measuredHeight)
-                    delay(200)
+                    delay(150)
 
-                    val fullBitmap = Bitmap.createBitmap(
-                        VIEWPORT_WIDTH_PX,
-                        measuredHeight,
-                        Bitmap.Config.RGB_565
-                    )
-                    val canvas = Canvas(fullBitmap)
-                    webView.draw(canvas)
+                    val fullBitmap = runCatching {
+                        val bmp = Bitmap.createBitmap(
+                            VIEWPORT_WIDTH_PX,
+                            measuredHeight,
+                            Bitmap.Config.RGB_565
+                        )
+                        val canvas = Canvas(bmp)
+                        webView.draw(canvas)
+                        bmp
+                    }.getOrElse { err ->
+                        DiagnosticLogHelper.log(TAG, "Bitmap allocation failed ($err), falling back to default viewport height")
+                        val fallbackBmp = Bitmap.createBitmap(VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX, Bitmap.Config.RGB_565)
+                        val canvas = Canvas(fallbackBmp)
+                        webView.draw(canvas)
+                        fallbackBmp
+                    }
 
                     withContext(Dispatchers.IO) {
                         compressBitmapToWebp(fullBitmap, fullScreenshotFile, 80)
@@ -172,6 +212,8 @@ class WebArchiveCaptureManager(private val context: Context) {
                         fullBitmap.recycle()
                     }
 
+                    DiagnosticLogHelper.log(TAG, "Screenshot and thumbnail saved successfully")
+
                     RawCaptureResult(
                         uuid = uuid,
                         resolvedTitle = resolvedTitle,
@@ -179,6 +221,35 @@ class WebArchiveCaptureManager(private val context: Context) {
                         author = author,
                         extractedDomText = extractedText,
                         wordCount = wordCount,
+                        mhtmlFile = mhtmlFile,
+                        fullScreenshotFile = fullScreenshotFile,
+                        thumbnailFile = thumbnailFile
+                    )
+                } catch (t: Throwable) {
+                    DiagnosticLogHelper.log(TAG, "Capture encounter exception: ${t.localizedMessage}. Performing fallback.")
+                    if (!mhtmlFile.exists() || mhtmlFile.length() == 0L) {
+                        mhtmlFile.writeText("<html><head><title>$targetUrl</title></head><body><h1>$targetUrl</h1><p>Capture fallback generated.</p></body></html>")
+                    }
+                    if (!fullScreenshotFile.exists() || fullScreenshotFile.length() == 0L) {
+                        val fallbackBmp = Bitmap.createBitmap(VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX, Bitmap.Config.RGB_565)
+                        val canvas = Canvas(fallbackBmp)
+                        runCatching { webView.draw(canvas) }
+                        withContext(Dispatchers.IO) {
+                            compressBitmapToWebp(fallbackBmp, fullScreenshotFile, 80)
+                            val thumbHeight = min(THUMBNAIL_HEIGHT_PX, fallbackBmp.height)
+                            val thumbBitmap = Bitmap.createBitmap(fallbackBmp, 0, 0, VIEWPORT_WIDTH_PX, thumbHeight)
+                            compressBitmapToWebp(thumbBitmap, thumbnailFile, 75)
+                            if (thumbBitmap != fallbackBmp) thumbBitmap.recycle()
+                            fallbackBmp.recycle()
+                        }
+                    }
+                    RawCaptureResult(
+                        uuid = uuid,
+                        resolvedTitle = webView.title?.ifBlank { targetUrl } ?: targetUrl,
+                        siteName = null,
+                        author = null,
+                        extractedDomText = webView.title ?: targetUrl,
+                        wordCount = 1,
                         mhtmlFile = mhtmlFile,
                         fullScreenshotFile = fullScreenshotFile,
                         thumbnailFile = thumbnailFile
@@ -197,27 +268,34 @@ class WebArchiveCaptureManager(private val context: Context) {
         spoofCrawler: Boolean = true
     ) = suspendCancellableCoroutine<Unit> { cont ->
         var resumed = false
+
+        fun resumeSafely(reason: String) {
+            if (!resumed && cont.isActive) {
+                resumed = true
+                DiagnosticLogHelper.log(TAG, "Page load trigger reached: $reason for $url")
+                cont.resume(Unit)
+            }
+        }
+
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                if (newProgress >= 90 && !resumed && cont.isActive) {
+                DiagnosticLogHelper.log(TAG, "onProgressChanged: $newProgress%")
+                // Trigger readiness at >= 75% so slow ad tracking scripts never stall capture
+                if (newProgress >= 75) {
                     val targetView = view ?: webView
                     PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
-                        if (!resumed && cont.isActive) {
-                            resumed = true
-                            cont.resume(Unit)
-                        }
+                        resumeSafely("onProgressChanged >= 75 ($newProgress%)")
                     }
                 }
             }
         }
+
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                DiagnosticLogHelper.log(TAG, "onPageFinished: $finishedUrl")
                 val targetView = view ?: webView
                 PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
-                    if (!resumed && cont.isActive) {
-                        resumed = true
-                        cont.resume(Unit)
-                    }
+                    resumeSafely("onPageFinished")
                 }
             }
 
@@ -226,15 +304,18 @@ class WebArchiveCaptureManager(private val context: Context) {
                 request: WebResourceRequest?,
                 error: WebResourceError?
             ) {
-                if (request?.isForMainFrame == true && !resumed && cont.isActive) {
-                    resumed = true
-                    cont.resume(Unit)
+                if (request?.isForMainFrame == true) {
+                    DiagnosticLogHelper.log(TAG, "onReceivedError (main frame): ${error?.description}")
+                    resumeSafely("onReceivedError: ${error?.description}")
                 }
             }
         }
+
         if (spoofCrawler) {
+            DiagnosticLogHelper.log(TAG, "Loading URL with Referer header: $url")
             webView.loadUrl(url, PaywallBypassHelper.SPOOFED_HEADERS)
         } else {
+            DiagnosticLogHelper.log(TAG, "Loading URL: $url")
             webView.loadUrl(url)
         }
     }

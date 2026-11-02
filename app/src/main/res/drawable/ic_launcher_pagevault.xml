@@ -3,23 +3,99 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Dark Vault Background -->
     <path
-        android:fillColor="#121212"
+        android:fillColor="#0D1117"
         android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Vault Outer Frame (Heavy Steel Safe) -->
     <path
-        android:strokeColor="#FF9800"
-        android:strokeWidth="6"
+        android:fillColor="#161B22"
+        android:strokeColor="#30363D"
+        android:strokeWidth="2.5"
+        android:pathData="M20,16 H88 A8,8 0 0 1 96,24 V84 A8,8 0 0 1 88,92 H20 A8,8 0 0 1 12,84 V24 A8,8 0 0 1 20,16 Z" />
+
+    <!-- Vault Dark Interior Chamber -->
+    <path
+        android:fillColor="#05070A"
+        android:pathData="M24,22 H84 A4,4 0 0 1 88,26 V82 A4,4 0 0 1 84,86 H24 A4,4 0 0 1 20,82 V26 A4,4 0 0 1 24,22 Z" />
+
+    <!-- Interior Storage Shelves / Depth Shadow -->
+    <path
+        android:fillColor="#0B0F17"
+        android:pathData="M24,54 H84 V86 H24 Z" />
+
+    <!-- Vault Hinges on Left -->
+    <path
+        android:fillColor="#484F58"
+        android:pathData="M10,28 H15 V36 H10 Z M10,72 H15 V80 H10 Z" />
+
+    <!-- The Document/Page (Sliding Halfway into Vault Door) -->
+    <!-- Document shadow inside vault -->
+    <path
+        android:fillColor="#000000"
+        android:fillAlpha="0.6"
+        android:pathData="M38,40 L72,32 L84,70 L50,78 Z" />
+
+    <!-- Document Body (Crisp White/Off-White Sheet) -->
+    <path
+        android:fillColor="#F0F6FC"
+        android:pathData="M42,34 L68,28 L82,68 L56,74 Z" />
+
+    <!-- Document Folded Corner (Top Right) -->
+    <path
+        android:fillColor="#C9D1D9"
+        android:pathData="M68,28 L74,38 L62,37 Z" />
+
+    <!-- Document Text Lines -->
+    <path
+        android:strokeColor="#8B949E"
+        android:strokeWidth="1.5"
         android:strokeLineCap="round"
-        android:pathData="M20,84 L88,84 M32,84 L52,42 M74,84 L52,42" />
+        android:pathData="M49,42 L63,39 M48,47 L70,42 M47,52 L69,47 M46,57 L64,53" />
+
+    <!-- Document Green "Saved/Secure" Badge -->
     <path
-        android:strokeColor="#00E676"
-        android:strokeWidth="5"
+        android:fillColor="#2EA043"
+        android:pathData="M68,60m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.2"
         android:strokeLineCap="round"
-        android:pathData="M24,62 L84,26" />
+        android:strokeLineJoin="round"
+        android:pathData="M65.5,60 L67.5,62 L71,58.5" />
+
+    <!-- Open Vault Door (Swung open to the left in perspective) -->
+    <!-- Door Outer Heavy Plate -->
     <path
-        android:fillColor="#FF9800"
-        android:pathData="M24,68m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0" />
+        android:fillColor="#21262D"
+        android:strokeColor="#58A6FF"
+        android:strokeWidth="2"
+        android:pathData="M14,20 L38,26 L38,82 L14,88 Z" />
+
+    <!-- Door Inner Bevel -->
     <path
-        android:fillColor="#00E676"
-        android:pathData="M84,26m-7,0a7,7 0,1 1,14 0a7,7 0,1 1,-14 0" />
+        android:fillColor="#161B22"
+        android:pathData="M17,25 L35,30 L35,78 L17,83 Z" />
+
+    <!-- Vault Locking Bolts on the Open Door Edge -->
+    <path
+        android:fillColor="#F0883E"
+        android:pathData="M38,34 H41 V38 H38 Z M38,52 H41 V56 H38 Z M38,70 H41 V74 H38 Z" />
+
+    <!-- Vault Wheel / Handle on Open Door -->
+    <path
+        android:strokeColor="#58A6FF"
+        android:strokeWidth="2"
+        android:pathData="M26,54m-7,0a7,7 0,1 1,14 0a7,7 0,1 1,-14 0" />
+    <path
+        android:strokeColor="#58A6FF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M26,44 L26,64 M16,54 L36,54" />
+    <path
+        android:fillColor="#58A6FF"
+        android:pathData="M26,54m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+
 </vector>
