@@ -65,6 +65,10 @@ class ExportAndShareHelper(private val context: Context) {
         fun wrapTextToLines(text: String, paint: Paint, maxWidthPt: Float): List<String> {
             val result = mutableListOf<String>()
             text.split("\n").forEach { paragraph ->
+                if (paragraph.trim().isEmpty()) {
+                    result.add("")
+                    return@forEach
+                }
                 val words = paragraph.trim().split(Regex("\\s+"))
                 var currentLine = StringBuilder()
                 for (word in words) {
@@ -212,6 +216,10 @@ class ExportAndShareHelper(private val context: Context) {
                     yPos += 15f
                     val bodyLines = wrapTextToLines(page.extractedTextSummary, bodyPaint, contentWidth.toFloat())
                     for (line in bodyLines) {
+                        if (line.isEmpty()) {
+                            yPos += 8f
+                            continue
+                        }
                         if (yPos > bottomLimit) startNewPdfPage()
                         canvas.drawText(line, margin.toFloat(), yPos, bodyPaint)
                         yPos += 14f
@@ -291,7 +299,7 @@ class ExportAndShareHelper(private val context: Context) {
                     appendLine("### 📄 Extracted DOM Text (Corpus Body for Word Mapping)")
                     appendLine(page.extractedTextSummary.ifBlank { "No DOM text extracted." })
                     appendLine()
-                    if (page.ocrText.isNotBlank()) {
+                    if (page.ocrText.isNotBlank() && page.extractedTextSummary.trim().length < 300) {
                         appendLine("### 🔍 Visual Screenshot OCR Transcript")
                         appendLine(page.ocrText)
                         appendLine()

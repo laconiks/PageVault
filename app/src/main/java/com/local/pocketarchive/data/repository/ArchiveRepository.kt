@@ -101,7 +101,7 @@ class ArchiveRepository(
             author = rawCapture.author.orEmpty(),
             mhtmlFilePath = rawCapture.mhtmlFile.absolutePath,
             screenshotFilePath = rawCapture.fullScreenshotFile.absolutePath,
-            extractedTextSummary = rawCapture.extractedDomText.take(3000),
+            extractedTextSummary = rawCapture.extractedDomText.take(65000),
             aiSummary = aiResult.summary,
             aiTags = aiResult.tags,
             ocrText = ocrText,

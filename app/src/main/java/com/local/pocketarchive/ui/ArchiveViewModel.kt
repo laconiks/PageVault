@@ -278,7 +278,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
                         author = snapshot.author.ifBlank { existingPage.author },
                         mhtmlFilePath = snapshot.mhtmlPath,
                         screenshotFilePath = snapshot.screenshotPath,
-                        extractedTextSummary = snapshot.extractedDomText.take(1500),
+                        extractedTextSummary = snapshot.extractedDomText.take(65000),
                         aiSummary = aiResult.summary,
                         aiTags = (aiResult.tags + listOf("v$nextVersion-Diff")).distinct(),
                         ocrText = ocrText,

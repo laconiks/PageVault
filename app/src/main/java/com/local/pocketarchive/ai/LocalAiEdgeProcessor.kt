@@ -218,10 +218,28 @@ class LocalAiEdgeProcessor(private val context: Context) {
         }
 
         // Deterministic local fallback when model file is not yet downloaded
-        val sentences = rawText
-            .split(Regex("(?<=[.!?])\\s+"))
+        val noisePattern = Regex(
+            "^(skip to main content|the homepage|subscribe|featured videos|add .* on google|follow topics|advertisement|photo:|image:|comments|terms of use)",
+            RegexOption.IGNORE_CASE
+        )
+        val cleanParagraphs = rawText
+            .split("\n")
             .map { it.trim() }
-            .filter { it.length > 45 }
+            .filter { line ->
+                line.length > 30 &&
+                    !line.startsWith("####") &&
+                    !line.startsWith("#") &&
+                    !line.startsWith(">") &&
+                    !noisePattern.containsMatchIn(line)
+            }
+
+        val sentences = cleanParagraphs
+            .flatMap { para -> para.split(Regex("(?<=[.!?])\\s+")).map { it.trim() } }
+            .filter { sentence ->
+                sentence.length in 35..350 &&
+                    !noisePattern.containsMatchIn(sentence) &&
+                    !sentence.equals("skip to main content", ignoreCase = true)
+            }
             .take(3)
 
         val fallbackSummary = if (sentences.isNotEmpty()) {

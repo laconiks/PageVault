@@ -73,13 +73,95 @@ class WebArchiveCaptureManager(private val context: Context) {
                     });
                     var metaSite = document.querySelector('meta[property="og:site_name"]');
                     var metaAuthor = document.querySelector('meta[name="author"]') || document.querySelector('meta[property="article:author"]');
-                    var rawText = (document.body && document.body.innerText) ? document.body.innerText.replace(/\s+/g, ' ').trim() : '';
+
+                    var root = document.querySelector('article') ||
+                               document.querySelector('[role="main"]') ||
+                               document.querySelector('main') ||
+                               document.body;
+                    var clone = root.cloneNode(true);
+
+                    // 1. Strip non-article website UI elements from the text clone
+                    var junkSelectors = [
+                        'nav', 'header', 'footer', 'aside', 'script', 'style', 'noscript', 'svg', 'form', 'button',
+                        '[role="navigation"]', '[role="banner"]', '[role="complementary"]',
+                        '[class*="nav"]', '[class*="menu"]', '[class*="header"]', '[class*="footer"]',
+                        '[class*="sidebar"]', '[class*="comment"]', '[id*="comment"]',
+                        '[class*="related"]', '[class*="recommended"]', '[class*="newsletter"]',
+                        '[class*="promo"]', '[class*="ad-"]', '[class*="advert"]', '[class*="social"]',
+                        '[class*="share"]', '[class*="byline"]', '[class*="author-bio"]',
+                        '[class*="video-player"]', '[class*="featured-video"]', '[class*="duet--recirculation"]',
+                        'figcaption', 'figure'
+                    ];
+                    junkSelectors.forEach(function(sel) {
+                        clone.querySelectorAll(sel).forEach(function(el) { el.remove(); });
+                    });
+
+                    // 2. Noise phrases injected inline by publishers (Verge, WaPo, etc.)
+                    var noiseLinePatterns = [
+                        /^skip to main content/i,
+                        /^the homepage$/i,
+                        /^subscribe$/i,
+                        /^featured videos from/i,
+                        /^add .* on google/i,
+                        /^add .* as a preferred source/i,
+                        /^follow topics and authors/i,
+                        /^\d+\s+comments/i,
+                        /^image:\s+/i,
+                        /^photo:\s+/i,
+                        /^advertisement$/i,
+                        /is a senior correspondent and author of/i
+                    ];
+
+                    function isNoise(text) {
+                        var t = text.trim();
+                        if (t.length < 25) return true;
+                        for (var i = 0; i < noiseLinePatterns.length; i++) {
+                            if (noiseLinePatterns[i].test(t)) return true;
+                        }
+                        return false;
+                    }
+
+                    // 3. Walk only semantic text blocks and preserve Markdown structure (\n\n and > blockquotes)
+                    var blocks = clone.querySelectorAll('p, h2, h3, blockquote');
+                    var paragraphs = [];
+                    var seen = {};
+
+                    blocks.forEach(function(b) {
+                        if (b.tagName === 'P' && b.closest('blockquote')) return;
+                        var txt = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (!isNoise(txt) && !seen[txt]) {
+                            seen[txt] = true;
+                            if (b.tagName === 'H2' || b.tagName === 'H3') {
+                                paragraphs.push('#### ' + txt);
+                            } else if (b.tagName === 'BLOCKQUOTE') {
+                                paragraphs.push('> ' + txt);
+                            } else {
+                                paragraphs.push(txt);
+                            }
+                        }
+                    });
+
+                    var articleMarkdown = '';
+                    if (paragraphs.length >= 2) {
+                        articleMarkdown = paragraphs.join('\n\n');
+                    } else {
+                        articleMarkdown = (clone.innerText || '')
+                            .split(/\n+/)
+                            .map(function(l) { return l.trim(); })
+                            .filter(function(l) { return !isNoise(l); })
+                            .join('\n\n');
+                    }
+
+                    if (!articleMarkdown || articleMarkdown.length < 100) {
+                        articleMarkdown = (document.body && document.body.innerText) ? document.body.innerText.trim() : '';
+                    }
+
                     var payload = JSON.stringify({
                         title: document.title || '',
                         siteName: metaSite ? metaSite.content : '',
                         author: metaAuthor ? metaAuthor.content : '',
                         scrollHeight: Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0),
-                        bodyText: rawText.substring(0, 15000)
+                        bodyText: articleMarkdown.substring(0, 75000)
                     });
                     return btoa(unescape(encodeURIComponent(payload)));
                 } catch (e) {
