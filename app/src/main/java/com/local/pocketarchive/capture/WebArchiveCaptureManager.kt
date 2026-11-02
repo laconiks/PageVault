@@ -11,6 +11,7 @@ import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.local.pocketarchive.util.DiagnosticLogHelper
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.resume
@@ -48,6 +50,16 @@ class WebArchiveCaptureManager(private val context: Context) {
         private const val THUMBNAIL_HEIGHT_PX = 720
         private const val CAPTURE_TIMEOUT_MS = 60_000L
         private const val PAGE_LOAD_TIMEOUT_MS = 12_000L
+
+        private val BLOCKED_NETWORK_PATTERNS = listOf(
+            "tinypass",
+            "piano.io",
+            "zephr",
+            "pwapi.washingtonpost.com",
+            "washingtonpost.com/subscribe/",
+            "cxense",
+            "blueconic"
+        )
 
         private val DOM_STABILIZATION_JS = """
             (function() {
@@ -94,6 +106,7 @@ class WebArchiveCaptureManager(private val context: Context) {
             val thumbnailFile = File(archiveDir, "thumb_$uuid.webp")
 
             withContext(Dispatchers.Main) {
+                runCatching { WebView.enableSlowWholeDocumentDraw() }
                 val widthSpec = View.MeasureSpec.makeMeasureSpec(VIEWPORT_WIDTH_PX, View.MeasureSpec.EXACTLY)
                 val initHeightSpec = View.MeasureSpec.makeMeasureSpec(DEFAULT_VIEWPORT_HEIGHT_PX, View.MeasureSpec.EXACTLY)
 
@@ -321,6 +334,18 @@ class WebArchiveCaptureManager(private val context: Context) {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                val reqUrl = request?.url?.toString()?.lowercase() ?: return super.shouldInterceptRequest(view, request)
+                if (BLOCKED_NETWORK_PATTERNS.any { reqUrl.contains(it) }) {
+                    DiagnosticLogHelper.log(TAG, "Network blocker blocked paywall/meter script: $reqUrl")
+                    return WebResourceResponse("text/javascript", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 DiagnosticLogHelper.log(TAG, "onPageFinished: $finishedUrl")
                 val targetView = view ?: webView

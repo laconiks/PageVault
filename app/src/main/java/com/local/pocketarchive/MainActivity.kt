@@ -16,6 +16,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: ArchiveViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        runCatching { android.webkit.WebView.enableSlowWholeDocumentDraw() }
         super.onCreate(savedInstanceState)
 
         handleIncomingShareIntent(intent)

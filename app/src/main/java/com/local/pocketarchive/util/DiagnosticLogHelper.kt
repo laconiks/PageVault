@@ -33,7 +33,7 @@ object DiagnosticLogHelper {
             val outFile = File(exportDir, fileName)
 
             val content = buildString {
-                appendLine("=== PageVault 0.6.7 Troubleshooting Log ===")
+                appendLine("=== PageVault 0.6.8 Troubleshooting Log ===")
                 appendLine("Device Make: ${Build.MANUFACTURER}")
                 appendLine("Device Model: ${Build.MODEL}")
                 appendLine("Android API Level: ${Build.VERSION.SDK_INT}")

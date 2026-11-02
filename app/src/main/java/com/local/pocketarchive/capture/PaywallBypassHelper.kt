@@ -105,8 +105,8 @@ object PaywallBypassHelper {
     }
 
     /**
-     * Injects surgical DOM unmasking and JSON-LD articleBody recovery script before MHTML/PDF capture.
-     * Removes paywalls and unlocks article truncation WITHOUT opening hidden mobile navigation drawers.
+     * Injects surgical DOM unmasking, text-aware gate removal, sticky bar removal,
+     * and Next.js (__NEXT_DATA__) + JSON-LD articleBody recovery script before MHTML/PDF capture.
      */
     fun unlockAndSanitizeDom(webView: WebView, onComplete: () -> Unit) {
         if (!webView.settings.javaScriptEnabled) {
@@ -141,7 +141,64 @@ object PaywallBypassHelper {
                     });
                 });
 
-                // 3. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
+                // 3. Text-Aware Gate Removal (The Verge, WaPo, etc.)
+                var gatePhrases = [
+                    "continue reading",
+                    "with a verge subscription",
+                    "two ways to read this article",
+                    "terms of use/your privacy rights",
+                    "go beyond the headline",
+                    "subscribe to the verge"
+                ];
+                var potentialGates = document.querySelectorAll('div, section, aside, form, dialog, [role="dialog"], [role="alertdialog"]');
+                potentialGates.forEach(function(el) {
+                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
+                    if (el.closest('article') && (el.innerText || '').length > 1200) return;
+                    var text = (el.innerText || '').toLowerCase();
+                    if (text.length > 0 && text.length < 1500) {
+                        for (var i = 0; i < gatePhrases.length; i++) {
+                            if (text.indexOf(gatePhrases[i]) !== -1) {
+                                el.remove();
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                // 4. Bottom-Anchored Sticky Bar & Backdrop Dimmer Removal
+                document.querySelectorAll('*').forEach(function(el) {
+                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
+                    var style = window.getComputedStyle(el);
+                    var pos = style.position;
+                    if (pos === 'fixed' || pos === 'sticky') {
+                        var rect = el.getBoundingClientRect();
+                        if (rect.top > window.innerHeight * 0.40 && rect.height < window.innerHeight * 0.85) {
+                            el.remove();
+                            return;
+                        }
+                        var bg = style.backgroundColor;
+                        if (bg && (bg.indexOf('rgba') !== -1 || bg.indexOf('hsla') !== -1)) {
+                            if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
+                                el.remove();
+                                return;
+                            }
+                        }
+                    } else {
+                        var bg = style.backgroundColor;
+                        if (bg && (bg.indexOf('rgba') !== -1 || bg.indexOf('hsla') !== -1)) {
+                            var z = parseInt(style.zIndex, 10);
+                            if (z > 100) {
+                                var rect = el.getBoundingClientRect();
+                                if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
+                                    el.remove();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // 5. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
                 var contentContainers = document.querySelectorAll(
                     'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"]'
                 );
@@ -155,24 +212,72 @@ object PaywallBypassHelper {
                     el.style.setProperty('position', 'static', 'important');
                 });
 
-                // 4. Hydrate truncated article paragraphs from JSON-LD articleBody if article text is gated
+                // 6. Next.js (__NEXT_DATA__) + JSON-LD Hydrator
                 try {
-                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
                     var longestBody = '';
-                    scripts.forEach(function(s) {
-                        var data = JSON.parse(s.textContent || '{}');
-                        var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
-                        items.forEach(function(item) {
-                            if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestBody.length) {
-                                longestBody = item.articleBody;
+                    var nextJsParas = [];
+
+                    var nextDataEl = document.getElementById('__NEXT_DATA__');
+                    if (nextDataEl && nextDataEl.textContent) {
+                        try {
+                            var nextData = JSON.parse(nextDataEl.textContent);
+                            function findContentElements(obj) {
+                                if (!obj || typeof obj !== 'object') return;
+                                if (Array.isArray(obj)) {
+                                    for (var i = 0; i < obj.length; i++) findContentElements(obj[i]);
+                                } else {
+                                    if (Array.isArray(obj.content_elements)) {
+                                        obj.content_elements.forEach(function(item) {
+                                            if (item && typeof item.content === 'string' && item.content.trim().length > 0) {
+                                                var clean = item.content.replace(/<[^>]*>/g, '').trim();
+                                                if (clean.length > 0) nextJsParas.push(clean);
+                                            } else if (item && typeof item.text === 'string' && item.text.trim().length > 0) {
+                                                var clean = item.text.replace(/<[^>]*>/g, '').trim();
+                                                if (clean.length > 0) nextJsParas.push(clean);
+                                            }
+                                        });
+                                    }
+                                    for (var k in obj) {
+                                        if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
+                                            findContentElements(obj[k]);
+                                        }
+                                    }
+                                }
                             }
-                        });
+                            findContentElements(nextData);
+                        } catch (ne) {}
+                    }
+
+                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    scripts.forEach(function(s) {
+                        try {
+                            var data = JSON.parse(s.textContent || '{}');
+                            var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
+                            items.forEach(function(item) {
+                                if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestBody.length) {
+                                    longestBody = item.articleBody;
+                                }
+                            });
+                        } catch (je) {}
                     });
+
                     var articleEl = document.querySelector('article') || document.querySelector('main') || document.body;
                     var currentVisibleLen = (articleEl.innerText || '').trim().length;
-                    if (longestBody.length > 700 && currentVisibleLen < longestBody.length * 0.65 && !document.getElementById('pagevault-jsonld-hydrated')) {
+
+                    if (nextJsParas.length > 3 && currentVisibleLen < nextJsParas.join(' ').length * 0.65 && !document.getElementById('pagevault-hydrated-content')) {
                         var container = document.createElement('div');
-                        container.id = 'pagevault-jsonld-hydrated';
+                        container.id = 'pagevault-hydrated-content';
+                        container.style.cssText = 'padding: 16px 0; font-family: sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
+                        nextJsParas.forEach(function(para) {
+                            var p = document.createElement('p');
+                            p.style.cssText = 'margin-bottom: 14px;';
+                            p.textContent = para;
+                            container.appendChild(p);
+                        });
+                        articleEl.appendChild(container);
+                    } else if (longestBody.length > 700 && currentVisibleLen < longestBody.length * 0.65 && !document.getElementById('pagevault-hydrated-content')) {
+                        var container = document.createElement('div');
+                        container.id = 'pagevault-hydrated-content';
                         container.style.cssText = 'padding: 16px 0; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; color: #111;';
                         longestBody.split(/\n+/).forEach(function(para) {
                             if (para.trim().length > 0) {
