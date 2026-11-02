@@ -2,6 +2,10 @@ package com.local.pocketarchive.capture
 
 import android.webkit.WebView
 import com.local.pocketarchive.util.DiagnosticLogHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 
 object PaywallBypassHelper {
 
@@ -16,6 +20,70 @@ object PaywallBypassHelper {
     val SPOOFED_HEADERS = mapOf(
         "Referer" to "https://www.google.com/"
     )
+
+    private val PAYWALL_BLOCK_PATTERNS = listOf(
+        "are you a robot",
+        "subscribe to continue",
+        "go beyond the headline",
+        "two ways to read",
+        "verify you are human",
+        "access to this page has been denied",
+        "subscription required",
+        "to continue reading",
+        "sign in to continue",
+        "exclusive for subscribers",
+        "please enable js",
+        "complete captcha"
+    )
+
+    /**
+     * Determines if extracted DOM text represents a hard paywall or CAPTCHA blocking screen.
+     */
+    fun isPaywallOrCaptchaBlocked(text: String): Boolean {
+        val clean = text.trim().lowercase()
+        if (clean.length < 500) return true
+        return PAYWALL_BLOCK_PATTERNS.any { pattern -> clean.contains(pattern) }
+    }
+
+    /**
+     * Fetches unblocked clean article text via Jina Reader fallback (r.jina.ai) for server-enforced paywalls.
+     */
+    suspend fun fetchCleanReaderText(targetUrl: String): String? = withContext(Dispatchers.IO) {
+        try {
+            DiagnosticLogHelper.log(TAG, "Fetching unblocked reader fallback via r.jina.ai for $targetUrl")
+            val cleanTarget = if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+                "https://$targetUrl"
+            } else {
+                targetUrl
+            }
+            val readerUrl = "https://r.jina.ai/$cleanTarget"
+            val connection = (URL(readerUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("User-Agent", CHROME_MOBILE_USER_AGENT)
+                setRequestProperty("Accept", "text/plain, text/markdown")
+                instanceFollowRedirects = true
+            }
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val body = connection.inputStream.bufferedReader().use { it.readText() }
+                if (body.length > 500) {
+                    DiagnosticLogHelper.log(TAG, "Successfully fetched clean reader text (${body.length} chars)")
+                    body
+                } else {
+                    DiagnosticLogHelper.log(TAG, "Jina reader text too short (${body.length} chars)")
+                    null
+                }
+            } else {
+                DiagnosticLogHelper.log(TAG, "Jina reader fallback returned HTTP $responseCode")
+                null
+            }
+        } catch (e: Exception) {
+            DiagnosticLogHelper.log(TAG, "Jina reader fallback failed: ${e.message}")
+            null
+        }
+    }
 
     /**
      * Configures WebView settings prior to loadUrl().

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.os.Build
 import android.util.Base64
 import android.view.View
@@ -43,7 +44,7 @@ class WebArchiveCaptureManager(private val context: Context) {
         private const val TAG = "WebArchiveCapture"
         private const val VIEWPORT_WIDTH_PX = 1080
         private const val DEFAULT_VIEWPORT_HEIGHT_PX = 2400
-        private const val MAX_CAPTURE_HEIGHT_PX = 12000
+        private const val MAX_CAPTURE_HEIGHT_PX = 6000
         private const val THUMBNAIL_HEIGHT_PX = 720
         private const val CAPTURE_TIMEOUT_MS = 60_000L
         private const val PAGE_LOAD_TIMEOUT_MS = 12_000L
@@ -100,6 +101,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     settings.loadsImagesAutomatically = true
                     settings.useWideViewPort = true
                     settings.loadWithOverviewMode = true
+                    setBackgroundColor(Color.WHITE)
                     measure(widthSpec, initHeightSpec)
                     layout(0, 0, VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX)
                 }
@@ -159,10 +161,46 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val resolvedTitle = parsed.optString("title").ifBlank { webView.title ?: targetUrl }
                     val siteName = parsed.optString("siteName").takeIf { it.isNotBlank() }
                     val author = parsed.optString("author").takeIf { it.isNotBlank() }
-                    val extractedText = parsed.optString("bodyText").ifBlank { resolvedTitle }
-                    val wordCount = extractedText.split(Regex("\\s+")).count { it.isNotBlank() }
-                    val measuredHeight = parsed.optInt("scrollHeight", DEFAULT_VIEWPORT_HEIGHT_PX)
+                    var extractedText = parsed.optString("bodyText").ifBlank { resolvedTitle }
+                    var measuredHeight = parsed.optInt("scrollHeight", DEFAULT_VIEWPORT_HEIGHT_PX)
                         .coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
+
+                    // Check for hard paywall / CAPTCHA blocks
+                    if (PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText)) {
+                        DiagnosticLogHelper.log(TAG, "Paywall / CAPTCHA block detected. Attempting Jina clean reader extraction...")
+                        val cleanReaderText = withContext(Dispatchers.IO) {
+                            PaywallBypassHelper.fetchCleanReaderText(targetUrl)
+                        }
+                        if (!cleanReaderText.isNullOrBlank() && cleanReaderText.length > extractedText.length) {
+                            DiagnosticLogHelper.log(TAG, "Clean reader text extracted (${cleanReaderText.length} chars). Overriding blocked text and injecting into DOM.")
+                            extractedText = cleanReaderText
+                            val escapedReaderText = JSONObject.quote(cleanReaderText)
+                            val injectJs = """
+                                (function() {
+                                    var container = document.createElement('div');
+                                    container.id = 'pagevault-clean-reader-container';
+                                    container.style.cssText = 'position:relative; z-index:999999; background:#ffffff; color:#1a1a1a; padding:24px; font-family:sans-serif; font-size:18px; line-height:1.6; max-width:800px; margin:0 auto;';
+                                    container.innerHTML = '<h1 style="font-size:26px; margin-bottom:16px;">' + (document.title || '') + '</h1><div style="white-space:pre-wrap;">' + $escapedReaderText + '</div>';
+                                    if (document.body) {
+                                        document.body.innerHTML = '';
+                                        document.body.appendChild(container);
+                                    }
+                                })();
+                            """.trimIndent()
+                            webView.evaluateJavascript(injectJs, null)
+                            delay(200)
+
+                            val newHeightStr = withTimeoutOrNull(2000L) {
+                                evaluateJsSuspend(webView, "Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)")
+                            }
+                            val newHeight = newHeightStr?.trim()?.removeSurrounding("\"")?.toIntOrNull()
+                            if (newHeight != null && newHeight > 0) {
+                                measuredHeight = newHeight.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
+                            }
+                        }
+                    }
+
+                    val wordCount = extractedText.split(Regex("\\s+")).count { it.isNotBlank() }
 
                     DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', words=$wordCount, measuredHeight=$measuredHeight")
 
@@ -184,7 +222,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val finalHeightSpec = View.MeasureSpec.makeMeasureSpec(measuredHeight, View.MeasureSpec.EXACTLY)
                     webView.measure(widthSpec, finalHeightSpec)
                     webView.layout(0, 0, VIEWPORT_WIDTH_PX, measuredHeight)
-                    delay(150)
+                    delay(250)
 
                     val fullBitmap = runCatching {
                         val bmp = Bitmap.createBitmap(
@@ -193,12 +231,14 @@ class WebArchiveCaptureManager(private val context: Context) {
                             Bitmap.Config.RGB_565
                         )
                         val canvas = Canvas(bmp)
+                        canvas.drawColor(Color.WHITE)
                         webView.draw(canvas)
                         bmp
                     }.getOrElse { err ->
                         DiagnosticLogHelper.log(TAG, "Bitmap allocation failed ($err), falling back to default viewport height")
                         val fallbackBmp = Bitmap.createBitmap(VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX, Bitmap.Config.RGB_565)
                         val canvas = Canvas(fallbackBmp)
+                        canvas.drawColor(Color.WHITE)
                         webView.draw(canvas)
                         fallbackBmp
                     }
@@ -233,6 +273,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     if (!fullScreenshotFile.exists() || fullScreenshotFile.length() == 0L) {
                         val fallbackBmp = Bitmap.createBitmap(VIEWPORT_WIDTH_PX, DEFAULT_VIEWPORT_HEIGHT_PX, Bitmap.Config.RGB_565)
                         val canvas = Canvas(fallbackBmp)
+                        canvas.drawColor(Color.WHITE)
                         runCatching { webView.draw(canvas) }
                         withContext(Dispatchers.IO) {
                             compressBitmapToWebp(fallbackBmp, fullScreenshotFile, 80)
@@ -280,11 +321,15 @@ class WebArchiveCaptureManager(private val context: Context) {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 DiagnosticLogHelper.log(TAG, "onProgressChanged: $newProgress%")
-                // Trigger readiness at >= 75% so slow ad tracking scripts never stall capture
                 if (newProgress >= 75) {
                     val targetView = view ?: webView
-                    PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
-                        resumeSafely("onProgressChanged >= 75 ($newProgress%)")
+                    targetView.evaluateJavascript("(document.body && document.body.innerText) ? document.body.innerText.trim().length : 0") { lenStr ->
+                        val textLen = lenStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
+                        if (textLen >= 800 || newProgress >= 98) {
+                            PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
+                                resumeSafely("onProgressChanged >= 75 (progress=$newProgress%, textLen=$textLen)")
+                            }
+                        }
                     }
                 }
             }

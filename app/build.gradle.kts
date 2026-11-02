@@ -13,8 +13,8 @@ android {
         applicationId = "com.local.pocketarchive"
         minSdk = 29
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.6.5"
+        versionCode = 8
+        versionName = "0.6.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
