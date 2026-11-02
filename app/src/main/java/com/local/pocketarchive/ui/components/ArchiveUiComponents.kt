@@ -1018,7 +1018,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About PageVault v0.6.6", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About PageVault v0.6.7", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "PageVault is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,

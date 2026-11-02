@@ -44,7 +44,7 @@ class WebArchiveCaptureManager(private val context: Context) {
         private const val TAG = "WebArchiveCapture"
         private const val VIEWPORT_WIDTH_PX = 1080
         private const val DEFAULT_VIEWPORT_HEIGHT_PX = 2400
-        private const val MAX_CAPTURE_HEIGHT_PX = 6000
+        private const val MAX_CAPTURE_HEIGHT_PX = 11500
         private const val THUMBNAIL_HEIGHT_PX = 720
         private const val CAPTURE_TIMEOUT_MS = 60_000L
         private const val PAGE_LOAD_TIMEOUT_MS = 12_000L
@@ -128,13 +128,11 @@ class WebArchiveCaptureManager(private val context: Context) {
                     delay(500)
 
                     if (!disableJs) {
-                        DiagnosticLogHelper.log(TAG, "Simulating user scroll and unmasking DOM")
-                        for (offset in 0..2000 step 1000) {
+                        DiagnosticLogHelper.log(TAG, "Scroll-priming lazy elements and unmasking DOM")
+                        for (offset in listOf(1500, 3500, 6000, 8500, 0)) {
                             webView.evaluateJavascript("window.scrollTo(0, $offset);", null)
                             delay(100)
                         }
-                        webView.evaluateJavascript("window.scrollTo(0, 0);", null)
-                        delay(200)
 
                         withTimeoutOrNull(3000L) {
                             suspendCancellableCoroutine<Unit> { cont ->
@@ -162,50 +160,21 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val siteName = parsed.optString("siteName").takeIf { it.isNotBlank() }
                     val author = parsed.optString("author").takeIf { it.isNotBlank() }
                     var extractedText = parsed.optString("bodyText").ifBlank { resolvedTitle }
-                    var measuredHeight = parsed.optInt("scrollHeight", DEFAULT_VIEWPORT_HEIGHT_PX)
-                        .coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
 
-                    // Check for hard paywall / CAPTCHA blocks
-                    if (PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText)) {
-                        DiagnosticLogHelper.log(TAG, "Paywall / CAPTCHA block detected. Attempting Jina clean reader extraction...")
-                        val cleanReaderText = withContext(Dispatchers.IO) {
-                            PaywallBypassHelper.fetchCleanReaderText(targetUrl)
-                        }
-                        if (!cleanReaderText.isNullOrBlank() && cleanReaderText.length > extractedText.length) {
-                            DiagnosticLogHelper.log(TAG, "Clean reader text extracted (${cleanReaderText.length} chars). Overriding blocked text and injecting into DOM.")
-                            extractedText = cleanReaderText
-                            val escapedReaderText = JSONObject.quote(cleanReaderText)
-                            val injectJs = """
-                                (function() {
-                                    var container = document.createElement('div');
-                                    container.id = 'pagevault-clean-reader-container';
-                                    container.style.cssText = 'position:relative; z-index:999999; background:#ffffff; color:#1a1a1a; padding:24px; font-family:sans-serif; font-size:18px; line-height:1.6; max-width:800px; margin:0 auto;';
-                                    container.innerHTML = '<h1 style="font-size:26px; margin-bottom:16px;">' + (document.title || '') + '</h1><div style="white-space:pre-wrap;">' + $escapedReaderText + '</div>';
-                                    if (document.body) {
-                                        document.body.innerHTML = '';
-                                        document.body.appendChild(container);
-                                    }
-                                })();
-                            """.trimIndent()
-                            webView.evaluateJavascript(injectJs, null)
-                            delay(200)
-
-                            val newHeightStr = withTimeoutOrNull(2000L) {
-                                evaluateJsSuspend(webView, "Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)")
-                            }
-                            val newHeight = newHeightStr?.trim()?.removeSurrounding("\"")?.toIntOrNull()
-                            if (newHeight != null && newHeight > 0) {
-                                measuredHeight = newHeight.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
-                            }
-                        }
+                    // Measure true document height in physical device pixels
+                    val density = context.resources.displayMetrics.density
+                    val rawScrollHeight = parsed.optInt("scrollHeight", 0)
+                    val calculatedHeight = if (rawScrollHeight > 0) {
+                        (rawScrollHeight * density).toInt()
+                    } else {
+                        DEFAULT_VIEWPORT_HEIGHT_PX
                     }
+                    val measuredHeight = calculatedHeight.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
 
-                    val wordCount = extractedText.split(Regex("\\s+")).count { it.isNotBlank() }
-
-                    DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', words=$wordCount, measuredHeight=$measuredHeight")
+                    DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', rawScrollHeight=$rawScrollHeight, density=$density -> measuredHeight=$measuredHeight")
 
                     onStageUpdate?.invoke("Step 2/4: Locking page layout & capturing preview image...")
-                    // Save MHTML archive with a 6s safety timeout
+                    // Save MHTML archive with a 6s safety timeout from the true visual WebView
                     DiagnosticLogHelper.log(TAG, "Saving MHTML web archive...")
                     withTimeoutOrNull(6_000L) {
                         saveWebArchiveSuspend(webView, mhtmlFile.absolutePath)
@@ -217,7 +186,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                         DiagnosticLogHelper.log(TAG, "MHTML archive saved successfully (${mhtmlFile.length()} bytes)")
                     }
 
-                    // ALWAYS capture screenshot + thumbnail even if page loaded slowly
+                    // ALWAYS capture screenshot + thumbnail from true visual WebView
                     DiagnosticLogHelper.log(TAG, "Capturing WebView screenshot ($VIEWPORT_WIDTH_PX x $measuredHeight)...")
                     val finalHeightSpec = View.MeasureSpec.makeMeasureSpec(measuredHeight, View.MeasureSpec.EXACTLY)
                     webView.measure(widthSpec, finalHeightSpec)
@@ -253,6 +222,22 @@ class WebArchiveCaptureManager(private val context: Context) {
                     }
 
                     DiagnosticLogHelper.log(TAG, "Screenshot and thumbnail saved successfully")
+
+                    // Check for hard paywall / CAPTCHA blocks or thin DOM text AFTER visual captures are saved.
+                    // Store Jina Reader clean text ONLY in extractedDomText (for AI Summary / Reader Mode).
+                    // NEVER mutate the WebView or overwrite visual captures with plain text!
+                    if (PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText) || extractedText.trim().length < 400) {
+                        DiagnosticLogHelper.log(TAG, "Thin text (${extractedText.trim().length} chars) or paywall detected. Fetching clean reader text fallback for AI/Reader Mode...")
+                        val cleanReaderText = withContext(Dispatchers.IO) {
+                            PaywallBypassHelper.fetchCleanReaderText(targetUrl)
+                        }
+                        if (!cleanReaderText.isNullOrBlank() && cleanReaderText.length > extractedText.length) {
+                            DiagnosticLogHelper.log(TAG, "Clean reader text retrieved (${cleanReaderText.length} chars) for AI Edge Summary & Reader Mode")
+                            extractedText = cleanReaderText
+                        }
+                    }
+
+                    val wordCount = extractedText.split(Regex("\\s+")).count { it.isNotBlank() }
 
                     RawCaptureResult(
                         uuid = uuid,

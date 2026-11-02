@@ -268,43 +268,49 @@ fun OfflineMhtmlWebView(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
-                        // Strip residual paywall modals & unlock scroll inside the loaded MHTML file
+                        // Strip residual paywall modals & unlock scroll inside loaded MHTML without opening navigation drawers
                         val cleanupJs = """
                             (function() {
-                                var badSelectors = [
-                                    '[class*="paywall"]', '[id*="paywall"]', '[class*="modal"]',
-                                    '[class*="gate"]', '[id*="gate"]', '[class*="overlay"]',
-                                    '[class*="piano"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
-                                    '[class*="regwall"]', '[class*="subscribe"]', '[data-qa*="paywall"]',
-                                    'iframe', '[class*="barrier"]', '[id*="barrier"]'
+                                // 1. Remove ONLY true paywall/piano/regwall modal overlays
+                                var paywallSelectors = [
+                                    '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
+                                    '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
+                                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]'
                                 ];
-                                badSelectors.forEach(function(sel) {
+                                paywallSelectors.forEach(function(sel) {
                                     document.querySelectorAll(sel).forEach(function(el) {
                                         if (el.tagName !== 'BODY' && el.tagName !== 'HTML' && el.tagName !== 'MAIN' && el.tagName !== 'ARTICLE') {
-                                            if (el.innerText.length < 700 || el.style.position === 'fixed') {
-                                                el.remove();
-                                            }
+                                            el.remove();
                                         }
                                     });
                                 });
-                                document.querySelectorAll('*').forEach(function(el) {
-                                    var st = window.getComputedStyle(el);
-                                    if (st.position === 'fixed' || st.position === 'sticky') {
-                                        el.style.position = 'static';
-                                        if (el.innerText.length < 400) el.style.display = 'none';
-                                    }
-                                    if (st.overflow === 'hidden' || st.overflowY === 'hidden' || st.maxHeight !== 'none') {
-                                        el.style.setProperty('overflow', 'visible', 'important');
-                                        el.style.setProperty('overflow-y', 'visible', 'important');
-                                        el.style.setProperty('max-height', 'none', 'important');
-                                        el.style.setProperty('-webkit-mask-image', 'none', 'important');
-                                        el.style.setProperty('mask-image', 'none', 'important');
-                                    }
+
+                                // 2. Ensure off-canvas mobile drawers (like NBC News blue menu) stay hidden
+                                var hiddenDrawers = [
+                                    '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
+                                    '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]'
+                                ];
+                                hiddenDrawers.forEach(function(sel) {
+                                    document.querySelectorAll(sel).forEach(function(el) {
+                                        el.style.setProperty('display', 'none', 'important');
+                                    });
+                                });
+
+                                // 3. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
+                                var contentContainers = document.querySelectorAll(
+                                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"]'
+                                );
+                                contentContainers.forEach(function(el) {
+                                    el.style.setProperty('overflow', 'visible', 'important');
+                                    el.style.setProperty('overflow-y', 'visible', 'important');
+                                    el.style.setProperty('max-height', 'none', 'important');
+                                    el.style.setProperty('height', 'auto', 'important');
+                                    el.style.setProperty('-webkit-mask-image', 'none', 'important');
+                                    el.style.setProperty('mask-image', 'none', 'important');
                                 });
                                 document.documentElement.style.setProperty('overflow', 'auto', 'important');
                                 document.body.style.setProperty('overflow', 'auto', 'important');
-                                document.body.style.setProperty('position', 'static', 'important');
-                                return document.body.innerText || '';
+                                return document.body ? (document.body.innerText || '') : '';
                             })();
                         """.trimIndent()
                         view?.evaluateJavascript(cleanupJs) { rawResult ->

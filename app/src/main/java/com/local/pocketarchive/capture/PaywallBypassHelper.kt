@@ -41,7 +41,7 @@ object PaywallBypassHelper {
      */
     fun isPaywallOrCaptchaBlocked(text: String): Boolean {
         val clean = text.trim().lowercase()
-        if (clean.length < 500) return true
+        if (clean.length < 400) return true
         return PAYWALL_BLOCK_PATTERNS.any { pattern -> clean.contains(pattern) }
     }
 
@@ -105,7 +105,8 @@ object PaywallBypassHelper {
     }
 
     /**
-     * Injects DOM unmasking and JSON-LD articleBody recovery script before MHTML/PDF capture.
+     * Injects surgical DOM unmasking and JSON-LD articleBody recovery script before MHTML/PDF capture.
+     * Removes paywalls and unlocks article truncation WITHOUT opening hidden mobile navigation drawers.
      */
     fun unlockAndSanitizeDom(webView: WebView, onComplete: () -> Unit) {
         if (!webView.settings.javaScriptEnabled) {
@@ -115,65 +116,80 @@ object PaywallBypassHelper {
 
         val unlockScript = """
             (function() {
-                try {
-                    // 1. Remove known paywall modals, banners, and scroll-lock backdrops
-                    const paywallSelectors = [
-                        '[class*="paywall"]', '[id*="paywall"]',
-                        '[class*="gate"]', '[id*="gate"]',
-                        '[class*="barrier"]', '[class*="piano"]',
-                        '[class*="tp-modal"]', '[class*="tp-backdrop"]',
-                        '[class*="subscription-wall"]', '[class*="reg-wall"]'
-                    ];
-                    document.querySelectorAll(paywallSelectors.join(',')).forEach(el => el.remove());
-
-                    // 2. Strip CSS height truncation and linear-gradient fade masks
-                    document.querySelectorAll('*').forEach(el => {
-                        const style = window.getComputedStyle(el);
-                        if (style.overflow === 'hidden' || style.maxHeight !== 'none' || 
-                            style.webkitMaskImage !== 'none' || style.maskImage !== 'none') {
-                            el.style.setProperty('overflow', 'visible', 'important');
-                            el.style.setProperty('max-height', 'none', 'important');
-                            el.style.setProperty('height', 'auto', 'important');
-                            el.style.setProperty('-webkit-mask-image', 'none', 'important');
-                            el.style.setProperty('mask-image', 'none', 'important');
+                // 1. Remove ONLY true paywall/piano/regwall modal overlays (never touch nav or article containers)
+                var paywallSelectors = [
+                    '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
+                    '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
+                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]'
+                ];
+                paywallSelectors.forEach(function(sel) {
+                    document.querySelectorAll(sel).forEach(function(el) {
+                        if (el.tagName !== 'BODY' && el.tagName !== 'HTML' && el.tagName !== 'MAIN' && el.tagName !== 'ARTICLE') {
+                            el.remove();
                         }
                     });
-                    document.body.style.setProperty('overflow', 'auto', 'important');
-                    document.documentElement.style.setProperty('overflow', 'auto', 'important');
+                });
 
-                    // 3. Hydrate from JSON-LD articleBody if visible article text is gated/truncated
-                    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                    scripts.forEach(s => {
-                        try {
-                            const raw = JSON.parse(s.innerText);
-                            const items = Array.isArray(raw) ? raw : (raw['@graph'] ? raw['@graph'] : [raw]);
-                            items.forEach(item => {
-                                if (item && item.articleBody && typeof item.articleBody === 'string' && item.articleBody.length > 600) {
-                                    const container = document.querySelector('article') || 
-                                                      document.querySelector('[class*="article-body"]') || 
-                                                      document.querySelector('main') || 
-                                                      document.body;
-                                    if (container && container.innerText.length < item.articleBody.length * 0.65) {
-                                        const existingRecovered = document.getElementById('pagevault-jsonld-recovered');
-                                        if (!existingRecovered) {
-                                            const wrapper = document.createElement('div');
-                                            wrapper.id = 'pagevault-jsonld-recovered';
-                                            wrapper.style.cssText = 'padding:16px; margin-top:16px; border-top:2px solid #ccc; font-family:sans-serif; line-height:1.6;';
-                                            const paragraphs = item.articleBody
-                                                .split(/\n+/)
-                                                .filter(p => p.trim().length > 0)
-                                                .map(p => '<p style="margin-bottom:14px;">' + p.trim() + '</p>')
-                                                .join('');
-                                            wrapper.innerHTML = paragraphs;
-                                            container.appendChild(wrapper);
-                                        }
-                                    }
-                                }
-                            });
-                        } catch (innerErr) {}
+                // 2. Ensure off-canvas mobile drawers (like NBC News blue menu) stay hidden
+                var hiddenDrawers = [
+                    '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
+                    '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]'
+                ];
+                hiddenDrawers.forEach(function(sel) {
+                    document.querySelectorAll(sel).forEach(function(el) {
+                        el.style.setProperty('display', 'none', 'important');
                     });
+                });
+
+                // 3. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
+                var contentContainers = document.querySelectorAll(
+                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"]'
+                );
+                contentContainers.forEach(function(el) {
+                    el.style.setProperty('overflow', 'visible', 'important');
+                    el.style.setProperty('overflow-y', 'visible', 'important');
+                    el.style.setProperty('max-height', 'none', 'important');
+                    el.style.setProperty('height', 'auto', 'important');
+                    el.style.setProperty('-webkit-mask-image', 'none', 'important');
+                    el.style.setProperty('mask-image', 'none', 'important');
+                    el.style.setProperty('position', 'static', 'important');
+                });
+
+                // 4. Hydrate truncated article paragraphs from JSON-LD articleBody if article text is gated
+                try {
+                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    var longestBody = '';
+                    scripts.forEach(function(s) {
+                        var data = JSON.parse(s.textContent || '{}');
+                        var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
+                        items.forEach(function(item) {
+                            if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestBody.length) {
+                                longestBody = item.articleBody;
+                            }
+                        });
+                    });
+                    var articleEl = document.querySelector('article') || document.querySelector('main') || document.body;
+                    var currentVisibleLen = (articleEl.innerText || '').trim().length;
+                    if (longestBody.length > 700 && currentVisibleLen < longestBody.length * 0.65 && !document.getElementById('pagevault-jsonld-hydrated')) {
+                        var container = document.createElement('div');
+                        container.id = 'pagevault-jsonld-hydrated';
+                        container.style.cssText = 'padding: 16px 0; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; color: #111;';
+                        longestBody.split(/\n+/).forEach(function(para) {
+                            if (para.trim().length > 0) {
+                                var p = document.createElement('p');
+                                p.style.cssText = 'margin-bottom: 14px;';
+                                p.textContent = para.trim();
+                                container.appendChild(p);
+                            }
+                        });
+                        articleEl.appendChild(container);
+                    }
                 } catch (e) {}
-                return "UNLOCKED";
+
+                return Math.max(
+                    document.body ? document.body.scrollHeight : 0,
+                    document.documentElement ? document.documentElement.scrollHeight : 0
+                );
             })();
         """.trimIndent()
 
