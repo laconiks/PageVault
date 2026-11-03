@@ -268,14 +268,23 @@ fun OfflineMhtmlWebView(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
-                        // Strip residual paywall modals, gates, sticky bars & unlock scroll inside loaded MHTML
+                        // Strip residual subscriber modals, gates, sticky bars & unlock scroll inside loaded MHTML
                         val cleanupJs = """
                             (function() {
-                                // 1. Remove ONLY true paywall/piano/regwall modal overlays
+                                // 1. Remove ONLY true subscriber/piano/regwall modal overlays
                                 var paywallSelectors = [
                                     '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
                                     '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
-                                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]'
+                                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]',
+                                    // Substack modals & subscription popups
+                                    '[class*="substack-modal"]', 'div.modal-wrapper', 'div.modal-table',
+                                    '[class*="subscribe-modal"]', '[class*="paywall-banner"]',
+                                    '[class*="post-preview-overlay"]', '[class*="paywall-boundary"]',
+                                    '[class*="modal-overlay"]', '[class*="reader-popover"]',
+                                    '[class*="subscriber-only-banner"]', '[class*="subscribe-widget"]',
+                                    '[class*="pencraft"][role="dialog"]', 'div[class*="gate-container"]',
+                                    // NBC News floating video players and modals
+                                    '[class*="floating-video"]', '[class*="sticky-player"]', '[class*="mini-player"]'
                                 ];
                                 paywallSelectors.forEach(function(sel) {
                                     document.querySelectorAll(sel).forEach(function(el) {
@@ -290,7 +299,9 @@ fun OfflineMhtmlWebView(
                                     '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
                                     '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]',
                                     'header ul', 'nav ul', '[class*="state-list"]', '[class*="navigation__list"]',
-                                    '[class*="quick-links"]'
+                                    '[class*="quick-links"]', '[class*="global-nav__menu"]', '[class*="hamburger-menu"]',
+                                    '[class*="msg-drawer"]', '[class*="drawer-container"]', 'header [role="dialog"]',
+                                    '[class*="slide-out"]', '[class*="nav-panel"]'
                                 ];
                                 hiddenDrawers.forEach(function(sel) {
                                     document.querySelectorAll(sel).forEach(function(el) {
@@ -298,14 +309,28 @@ fun OfflineMhtmlWebView(
                                     });
                                 });
 
-                                // 3. Text-Aware Gate Removal (The Verge, WaPo, etc.)
+                                // 3. Text-Aware Gate Removal (The Verge, WaPo, Substack, etc.)
                                 var gatePhrases = [
                                     "continue reading",
                                     "with a verge subscription",
                                     "two ways to read this article",
                                     "terms of use/your privacy rights",
                                     "go beyond the headline",
-                                    "subscribe to the verge"
+                                    "subscribe to the verge",
+                                    "read in the substack app",
+                                    "expand post",
+                                    "sign up to keep reading",
+                                    "subscribe to keep reading",
+                                    "get the substack app",
+                                    "read in app",
+                                    "free preview",
+                                    "this post is for paid subscribers",
+                                    "upgrade to paid",
+                                    "already a subscriber? sign in",
+                                    "let's be inbox friends",
+                                    "open in app",
+                                    "open in the substack app",
+                                    "continue in app"
                                 ];
                                 var potentialGates = document.querySelectorAll('div, section, aside, form, dialog, [role="dialog"], [role="alertdialog"]');
                                 potentialGates.forEach(function(el) {
@@ -319,6 +344,14 @@ fun OfflineMhtmlWebView(
                                                 break;
                                             }
                                         }
+                                    }
+                                });
+
+                                // 3b. Auto-dismiss or click Substack expand/dismiss buttons if present
+                                document.querySelectorAll('button, a, div[role="button"]').forEach(function(btn) {
+                                    var t = (btn.innerText || '').trim().toLowerCase();
+                                    if (t === 'expand post' || t === 'expand' || t === 'continue reading' || t === 'no thanks' || t === 'read first') {
+                                        try { btn.click(); } catch(e) {}
                                     }
                                 });
 
@@ -357,7 +390,7 @@ fun OfflineMhtmlWebView(
 
                                 // 5. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
                                 var contentContainers = document.querySelectorAll(
-                                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"]'
+                                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"], [class*="post-content"], [class*="substack-post"], [class*="post-body"], [class*="body-markup"], [class*="single-post"], [class*="article-body__content"]'
                                 );
                                 contentContainers.forEach(function(el) {
                                     el.style.setProperty('overflow', 'visible', 'important');

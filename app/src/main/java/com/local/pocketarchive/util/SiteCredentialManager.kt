@@ -109,6 +109,13 @@ object DomainBrandPalette {
                 badgeBackground = Color(0xFF0284C7),
                 badgeText = Color(0xFFE0F2FE)
             )
+            // Substack -> Vibrant Substack Orange
+            key.contains("substack") -> SiteBrandColors(
+                cardBackground = Color(0xFF281206),
+                borderAccent = Color(0xFFFF6719),
+                badgeBackground = Color(0xFFEA580C),
+                badgeText = Color(0xFFFFF7ED)
+            )
             // Washington Post / WSJ / NYT -> Editorial Royal Blue & Slate
             key.contains("washingtonpost") || key.contains("nytimes") || key.contains("wsj") -> SiteBrandColors(
                 cardBackground = Color(0xFF0B162C),

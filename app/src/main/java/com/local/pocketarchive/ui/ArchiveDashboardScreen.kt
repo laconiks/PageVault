@@ -414,7 +414,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { viewModel.updateSearchQuery(it) },
-                    placeholder = { Text("Search vault (FTS4 + OCR)...") },
+                    placeholder = { Text("Search vault...") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     trailingIcon = {

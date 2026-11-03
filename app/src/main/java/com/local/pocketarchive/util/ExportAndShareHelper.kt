@@ -25,11 +25,11 @@ class ExportAndShareHelper(private val context: Context) {
     }
 
     suspend fun generateSinglePagePdf(page: ArchivedPage): File? =
-        generateBatchPdf(listOf(page), "PageVault_${page.uuid.take(8)}_v${page.versionNumber}.pdf")
+        generateBatchPdf(listOf(page), "WebVaultr_${page.uuid.take(8)}_v${page.versionNumber}.pdf")
 
     suspend fun generateBatchPdf(
         pages: List<ArchivedPage>,
-        fileName: String = "PageVault_Batch_${System.currentTimeMillis()}.pdf"
+        fileName: String = "WebVaultr_Batch_${System.currentTimeMillis()}.pdf"
     ): File? = withContext(Dispatchers.IO) {
         if (pages.isEmpty()) return@withContext null
         val pdfDocument = PdfDocument()
@@ -244,14 +244,14 @@ class ExportAndShareHelper(private val context: Context) {
     }
 
     suspend fun generateSingleMarkdown(page: ArchivedPage): File? =
-        generateBatchMarkdown(listOf(page), "PageVault_${page.uuid.take(8)}_v${page.versionNumber}.md")
+        generateBatchMarkdown(listOf(page), "WebVaultr_${page.uuid.take(8)}_v${page.versionNumber}.md")
 
     suspend fun generateSinglePageMarkdown(page: ArchivedPage): File? =
         generateSingleMarkdown(page)
 
     suspend fun generateBatchMarkdown(
         pages: List<ArchivedPage>,
-        fileName: String = "PageVault_Corpus_${System.currentTimeMillis()}.md"
+        fileName: String = "WebVaultr_Corpus_${System.currentTimeMillis()}.md"
     ): File? = withContext(Dispatchers.IO) {
         if (pages.isEmpty()) {
             DiagnosticLogHelper.log(TAG, "generateBatchMarkdown called with empty pages list")
@@ -264,7 +264,7 @@ class ExportAndShareHelper(private val context: Context) {
             val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US)
 
             val markdownContent = buildString {
-                appendLine("# PageVault Structured AI & Word-Mapping Corpus")
+                appendLine("# WebVaultr Structured AI & Word-Mapping Corpus")
                 appendLine("- **Exported Articles:** ${pages.size}")
                 appendLine("- **Generated On-Device:** ${dateFormat.format(Date())}")
                 appendLine("- **Privacy Guarantee:** 100% Local On-Device Extraction (Zero Cloud)")
@@ -344,7 +344,7 @@ class ExportAndShareHelper(private val context: Context) {
             DiagnosticLogHelper.log(TAG, "Sharing ${files.size} file(s) via chooser ($mimeType): ${files.joinToString { it.name }}")
             Toast.makeText(context, "Export ready: ${files.first().name}", Toast.LENGTH_SHORT).show()
 
-            context.startActivity(Intent.createChooser(shareIntent, "Export from PageVault").apply {
+            context.startActivity(Intent.createChooser(shareIntent, "Export from WebVaultr").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         } catch (t: Throwable) {

@@ -283,7 +283,7 @@ fun InteractiveSiteLoginDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text("Subscriber Login & Cookie Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text("Log in once. PageVault saves your session & cookies locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Log in once. WebVaultr saves your session & cookies locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     IconButton(onClick = onDismiss) {
@@ -408,7 +408,7 @@ fun VaultArticleCard(
     page: ArchivedPage,
     revisions: List<ArchivedPage> = emptyList(),
     isSelected: Boolean,
-    captureStageText: String = "Step 1/4: Connecting & bypassing paywall...",
+    captureStageText: String = "Step 1/4: Connecting & archiving page...",
     onCardClick: () -> Unit,
     onCardLongClick: () -> Unit,
     onExportPdf: () -> Unit,
@@ -1339,7 +1339,7 @@ fun SettingsAndAboutDialog(
                 var showLoginDialog by remember { mutableStateOf(false) }
 
                 Text("Subscriber Credentials & Sessions (AES-256)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text("Log into publications to sync cookies and capture paywalled articles locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Log into publications to sync cookies and capture subscriber articles locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                 if (savedCreds.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1514,7 +1514,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About WebVaultr v0.8.1", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.8.2", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,
@@ -1625,7 +1625,7 @@ fun AiEdgeGalleryOnboardingDialog(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "PageVault analyzes, summarizes, and diffs web captures entirely on your device using LiteRT & MediaPipe LLM. No personal reading data or tokens ever leave your hardware.",
+                            "WebVaultr analyzes, summarizes, and diffs web captures entirely on your device using LiteRT & MediaPipe LLM. No personal reading data or tokens ever leave your hardware.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )

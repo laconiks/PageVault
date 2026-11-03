@@ -70,7 +70,7 @@ class RssFeedScraperWorker(
             connectTimeout = 10_000
             readTimeout = 10_000
             requestMethod = "GET"
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Android; PageVault RSS Engine)")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Android; WebVaultr RSS Engine)")
         }
 
         connection.inputStream.use { stream ->

@@ -135,7 +135,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         _selectedUuids.value = emptySet()
     }
 
-    private val _captureStageText = MutableStateFlow("Step 1/4: Connecting & bypassing paywall...")
+    private val _captureStageText = MutableStateFlow("Step 1/4: Connecting & archiving page...")
     val captureStageText: StateFlow<String> = _captureStageText.asStateFlow()
 
     private val _isOneSentenceView = MutableStateFlow(false)
@@ -181,7 +181,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
                     _queuedUrls.update { it - url }
                     count++
                     val queuePrefix = "Queue ($count/$total): "
-                    _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & bypassing paywall..."
+                    _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & archiving page..."
                     val startMs = System.currentTimeMillis()
 
                     repository.captureAndIndexUrl(
@@ -218,7 +218,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _isCapturing.value = true
             _capturingUrl.value = cleanUrl
-            _captureStageText.value = "Step 1/4: Connecting & bypassing paywall..."
+            _captureStageText.value = "Step 1/4: Connecting & archiving page..."
             val startTimeMs = System.currentTimeMillis()
 
             try {
@@ -247,7 +247,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _isCapturing.value = true
             _capturingUrl.value = existingPage.originalUrl
-            _captureStageText.value = "Step 1/4: Connecting & bypassing paywall..."
+            _captureStageText.value = "Step 1/4: Connecting & archiving page..."
             val startTimeMs = System.currentTimeMillis()
             val nextVersion = dao.getVersionCountForChain(rootUuid) + 1
 
@@ -344,7 +344,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         val oneTimeRequest = OneTimeWorkRequestBuilder<RssFeedScraperWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
-        workManager.enqueueUniqueWork("PageVaultImmediateRssSync", ExistingWorkPolicy.REPLACE, oneTimeRequest)
+        workManager.enqueueUniqueWork("WebVaultrImmediateRssSync", ExistingWorkPolicy.REPLACE, oneTimeRequest)
         _uiAlerts.tryEmit("Scanning RSS feeds for matching articles...")
     }
 
@@ -359,7 +359,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
             .build()
 
         workManager.enqueueUniquePeriodicWork(
-            "PageVaultPeriodicRssSync",
+            "WebVaultrPeriodicRssSync",
             ExistingPeriodicWorkPolicy.UPDATE,
             periodicRequest
         )

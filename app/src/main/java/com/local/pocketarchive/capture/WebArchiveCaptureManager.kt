@@ -82,6 +82,9 @@ class WebArchiveCaptureManager(private val context: Context) {
 
                     var root = document.querySelector('article') ||
                                document.querySelector('[role="main"]') ||
+                               document.querySelector('[class*="article-body__content"]') ||
+                               document.querySelector('[class*="article-body"]') ||
+                               document.querySelector('[class*="post-content"]') ||
                                document.querySelector('main') ||
                                document.body;
                     var clone = root.cloneNode(true);
@@ -96,6 +99,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                         '[class*="promo"]', '[class*="ad-"]', '[class*="advert"]', '[class*="social"]',
                         '[class*="share"]', '[class*="byline"]', '[class*="author-bio"]',
                         '[class*="video-player"]', '[class*="featured-video"]', '[class*="duet--recirculation"]',
+                        '[class*="embedded-video"]', '[class*="inline-video"]',
                         'figcaption', 'figure'
                     ];
                     junkSelectors.forEach(function(sel) {
@@ -186,7 +190,7 @@ class WebArchiveCaptureManager(private val context: Context) {
         onStageUpdate: ((String) -> Unit)? = null
     ): Result<RawCaptureResult> = runCatching {
         withTimeout(CAPTURE_TIMEOUT_MS) {
-            onStageUpdate?.invoke("Step 1/4: Connecting & bypassing paywall...")
+            onStageUpdate?.invoke("Step 1/4: Connecting & archiving page...")
             DiagnosticLogHelper.log(TAG, "Starting capture for $targetUrl [uuid=$uuid, spoofCrawler=$spoofCrawler, disableJs=$disableJs]")
             val archiveDir = File(context.filesDir, "archives/$uuid").apply { mkdirs() }
             val mhtmlFile = File(archiveDir, "snapshot_$uuid.mht")
@@ -328,7 +332,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     // Store Jina Reader clean text ONLY in extractedDomText (for AI Summary / Reader Mode).
                     // NEVER mutate the WebView or overwrite visual captures with plain text!
                     if (PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText) || extractedText.trim().length < 400) {
-                        DiagnosticLogHelper.log(TAG, "Thin text (${extractedText.trim().length} chars) or paywall detected. Fetching clean reader text fallback for AI/Reader Mode...")
+                        DiagnosticLogHelper.log(TAG, "Thin text (${extractedText.trim().length} chars) or restricted page detected. Fetching clean reader text fallback for AI/Reader Mode...")
                         val cleanReaderText = withContext(Dispatchers.IO) {
                             PaywallBypassHelper.fetchCleanReaderText(targetUrl)
                         }
@@ -428,7 +432,7 @@ class WebArchiveCaptureManager(private val context: Context) {
             ): WebResourceResponse? {
                 val reqUrl = request?.url?.toString()?.lowercase() ?: return super.shouldInterceptRequest(view, request)
                 if (BLOCKED_NETWORK_PATTERNS.any { reqUrl.contains(it) }) {
-                    DiagnosticLogHelper.log(TAG, "Network blocker blocked paywall/meter script: $reqUrl")
+                    DiagnosticLogHelper.log(TAG, "Network blocker blocked tracking/meter script: $reqUrl")
                     return WebResourceResponse("text/javascript", "UTF-8", ByteArrayInputStream(ByteArray(0)))
                 }
                 return super.shouldInterceptRequest(view, request)
@@ -436,8 +440,8 @@ class WebArchiveCaptureManager(private val context: Context) {
 
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 val currentTitle = (view ?: webView).title.orEmpty()
-                if (currentTitle.contains("Just a moment", ignoreCase = true)) {
-                    DiagnosticLogHelper.log(TAG, "onPageFinished fired with 'Just a moment...' placeholder; waiting for hydration")
+                if (currentTitle.contains("Just a moment", ignoreCase = true) || currentTitle.contains("Checking your browser", ignoreCase = true)) {
+                    DiagnosticLogHelper.log(TAG, "onPageFinished fired with '$currentTitle' placeholder; waiting for hydration")
                     return
                 }
                 DiagnosticLogHelper.log(TAG, "onPageFinished: $finishedUrl")

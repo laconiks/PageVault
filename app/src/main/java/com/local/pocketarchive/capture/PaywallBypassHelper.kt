@@ -9,7 +9,7 @@ import java.net.URL
 
 object PaywallBypassHelper {
 
-    private const val TAG = "PaywallBypass"
+    private const val TAG = "WebArchiveSanitizer"
 
     const val CHROME_MOBILE_USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
@@ -33,11 +33,16 @@ object PaywallBypassHelper {
         "sign in to continue",
         "exclusive for subscribers",
         "please enable js",
-        "complete captcha"
+        "complete captcha",
+        "read in the substack app",
+        "this post is for paid subscribers",
+        "upgrade to paid",
+        "open in the substack app",
+        "let's be inbox friends"
     )
 
     /**
-     * Determines if extracted DOM text represents a hard paywall or CAPTCHA blocking screen.
+     * Determines if extracted DOM text represents a hard paywall, subscription barrier, or CAPTCHA blocking screen.
      */
     fun isPaywallOrCaptchaBlocked(text: String): Boolean {
         val clean = text.trim().lowercase()
@@ -50,7 +55,7 @@ object PaywallBypassHelper {
      */
     suspend fun fetchCleanReaderText(targetUrl: String): String? = withContext(Dispatchers.IO) {
         try {
-            DiagnosticLogHelper.log(TAG, "Fetching unblocked reader fallback via r.jina.ai for $targetUrl")
+            DiagnosticLogHelper.log(TAG, "Fetching clean reader fallback via r.jina.ai for $targetUrl")
             val cleanTarget = if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
                 "https://$targetUrl"
             } else {
@@ -122,11 +127,20 @@ object PaywallBypassHelper {
 
         val unlockScript = """
             (function() {
-                // 1. Remove ONLY true paywall/piano/regwall modal overlays (never touch nav or article containers)
+                // 1. Remove ONLY true subscriber/piano/regwall modal overlays (never touch nav or article containers)
                 var paywallSelectors = [
                     '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
                     '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
-                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]'
+                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]',
+                    // Substack modals & subscription popups
+                    '[class*="substack-modal"]', 'div.modal-wrapper', 'div.modal-table',
+                    '[class*="subscribe-modal"]', '[class*="paywall-banner"]',
+                    '[class*="post-preview-overlay"]', '[class*="paywall-boundary"]',
+                    '[class*="modal-overlay"]', '[class*="reader-popover"]',
+                    '[class*="subscriber-only-banner"]', '[class*="subscribe-widget"]',
+                    '[class*="pencraft"][role="dialog"]', 'div[class*="gate-container"]',
+                    // NBC News floating video players and modals
+                    '[class*="floating-video"]', '[class*="sticky-player"]', '[class*="mini-player"]'
                 ];
                 paywallSelectors.forEach(function(sel) {
                     document.querySelectorAll(sel).forEach(function(el) {
@@ -141,7 +155,9 @@ object PaywallBypassHelper {
                     '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
                     '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]',
                     'header ul', 'nav ul', '[class*="state-list"]', '[class*="navigation__list"]',
-                    '[class*="quick-links"]'
+                    '[class*="quick-links"]', '[class*="global-nav__menu"]', '[class*="hamburger-menu"]',
+                    '[class*="msg-drawer"]', '[class*="drawer-container"]', 'header [role="dialog"]',
+                    '[class*="slide-out"]', '[class*="nav-panel"]'
                 ];
                 hiddenDrawers.forEach(function(sel) {
                     document.querySelectorAll(sel).forEach(function(el) {
@@ -149,14 +165,28 @@ object PaywallBypassHelper {
                     });
                 });
 
-                // 3. Text-Aware Gate Removal (The Verge, WaPo, etc.)
+                // 3. Text-Aware Gate Removal (The Verge, WaPo, Substack, etc.)
                 var gatePhrases = [
                     "continue reading",
                     "with a verge subscription",
                     "two ways to read this article",
                     "terms of use/your privacy rights",
                     "go beyond the headline",
-                    "subscribe to the verge"
+                    "subscribe to the verge",
+                    "read in the substack app",
+                    "expand post",
+                    "sign up to keep reading",
+                    "subscribe to keep reading",
+                    "get the substack app",
+                    "read in app",
+                    "free preview",
+                    "this post is for paid subscribers",
+                    "upgrade to paid",
+                    "already a subscriber? sign in",
+                    "let's be inbox friends",
+                    "open in app",
+                    "open in the substack app",
+                    "continue in app"
                 ];
                 var potentialGates = document.querySelectorAll('div, section, aside, form, dialog, [role="dialog"], [role="alertdialog"]');
                 potentialGates.forEach(function(el) {
@@ -170,6 +200,14 @@ object PaywallBypassHelper {
                                 break;
                             }
                         }
+                    }
+                });
+
+                // 3b. Auto-dismiss or click Substack expand/dismiss buttons if present
+                document.querySelectorAll('button, a, div[role="button"]').forEach(function(btn) {
+                    var t = (btn.innerText || '').trim().toLowerCase();
+                    if (t === 'expand post' || t === 'expand' || t === 'continue reading' || t === 'no thanks' || t === 'read first') {
+                        try { btn.click(); } catch(e) {}
                     }
                 });
 
@@ -208,7 +246,7 @@ object PaywallBypassHelper {
 
                 // 5. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
                 var contentContainers = document.querySelectorAll(
-                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"]'
+                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"], [class*="post-content"], [class*="substack-post"], [class*="post-body"], [class*="body-markup"], [class*="single-post"], [class*="article-body__content"]'
                 );
                 contentContainers.forEach(function(el) {
                     el.style.setProperty('overflow', 'visible', 'important');
@@ -272,9 +310,9 @@ object PaywallBypassHelper {
                     var articleEl = document.querySelector('article') || document.querySelector('main') || document.body;
                     var currentVisibleLen = (articleEl.innerText || '').trim().length;
 
-                    if (nextJsParas.length > 3 && currentVisibleLen < nextJsParas.join(' ').length * 0.65 && !document.getElementById('pagevault-hydrated-content')) {
+                    if (nextJsParas.length > 3 && currentVisibleLen < nextJsParas.join(' ').length * 0.65 && !document.getElementById('webvaultr-hydrated-content') && !document.getElementById('pagevault-hydrated-content')) {
                         var container = document.createElement('div');
-                        container.id = 'pagevault-hydrated-content';
+                        container.id = 'webvaultr-hydrated-content';
                         container.style.cssText = 'padding: 16px 0; font-family: sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
                         nextJsParas.forEach(function(para) {
                             var p = document.createElement('p');
@@ -283,9 +321,9 @@ object PaywallBypassHelper {
                             container.appendChild(p);
                         });
                         articleEl.appendChild(container);
-                    } else if (longestBody.length > 700 && currentVisibleLen < longestBody.length * 0.65 && !document.getElementById('pagevault-hydrated-content')) {
+                    } else if (longestBody.length > 700 && currentVisibleLen < longestBody.length * 0.65 && !document.getElementById('webvaultr-hydrated-content') && !document.getElementById('pagevault-hydrated-content')) {
                         var container = document.createElement('div');
-                        container.id = 'pagevault-hydrated-content';
+                        container.id = 'webvaultr-hydrated-content';
                         container.style.cssText = 'padding: 16px 0; font-family: Georgia, serif; font-size: 18px; line-height: 1.65; color: #111;';
                         longestBody.split(/\n+/).forEach(function(para) {
                             if (para.trim().length > 0) {
