@@ -1,9 +1,20 @@
 package com.local.pocketarchive.ui.components
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -22,22 +34,38 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.local.pocketarchive.ai.AiEdgeModel
 import com.local.pocketarchive.ai.EdgeModelOption
+import com.local.pocketarchive.capture.PaywallBypassHelper
 import com.local.pocketarchive.data.local.ArchivedPage
 import com.local.pocketarchive.data.local.CaptureStatus
 import com.local.pocketarchive.data.local.RssSubscription
 import com.local.pocketarchive.ui.theme.ThemeMode
+import com.local.pocketarchive.util.AppUiPreferences
+import com.local.pocketarchive.util.DomainBrandPalette
+import com.local.pocketarchive.util.SiteCredentialManager
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -55,6 +83,325 @@ fun getDomainAccentColor(siteOrUrl: String): Color {
     return palette[hash % palette.size]
 }
 
+@Composable
+fun GeminiRainbowSpinner(
+    modifier: Modifier = Modifier,
+    strokeWidth: Dp = 2.5.dp
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "GeminiRainbowSpin")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation"
+    )
+
+    val rainbowBrush = remember {
+        Brush.sweepGradient(
+            listOf(
+                Color(0xFF4285F4), // Google Blue
+                Color(0xFF9B72CB), // Gemini Purple
+                Color(0xFFD96570), // Coral Red
+                Color(0xFFF4B400), // Amber Yellow
+                Color(0xFF4285F4)  // Google Blue
+            )
+        )
+    }
+
+    Canvas(modifier = modifier.rotate(rotation)) {
+        val strokePx = strokeWidth.toPx()
+        val diameter = size.minDimension - strokePx
+        val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+        val arcSize = Size(diameter, diameter)
+
+        drawArc(
+            brush = rainbowBrush,
+            startAngle = 0f,
+            sweepAngle = 290f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = strokePx, cap = StrokeCap.Round)
+        )
+    }
+}
+
+@Composable
+fun MarkdownViewerDialog(
+    page: ArchivedPage,
+    onDismiss: () -> Unit,
+    onShareMarkdown: () -> Unit
+) {
+    val clipboardManager = LocalClipboardManager.current
+    val localView = LocalView.current
+    var copied by remember { mutableStateOf(false) }
+
+    val rawContent = remember(page.extractedTextSummary, page.aiSummary) {
+        page.extractedTextSummary.ifBlank { page.aiSummary }.ifBlank { "No text content extracted for this capture." }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Markdown Document",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = page.title,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 200.dp, max = 460.dp)
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    SelectionContainer(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = rawContent,
+                            style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        AppUiPreferences.triggerHaptic(localView)
+                        clipboardManager.setText(AnnotatedString(rawContent))
+                        copied = true
+                    }
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (copied) "Copied!" else "Copy Text")
+                }
+                Button(
+                    onClick = {
+                        AppUiPreferences.triggerHaptic(localView)
+                        onShareMarkdown()
+                    }
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Share .md")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    AppUiPreferences.triggerHaptic(localView)
+                    onDismiss()
+                }
+            ) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun InteractiveSiteLoginDialog(
+    initialDomain: String = "",
+    onDismiss: () -> Unit,
+    onLoginSaved: () -> Unit
+) {
+    val context = LocalContext.current
+    val localView = LocalView.current
+    var domainInput by remember { mutableStateOf(initialDomain) }
+    var usernameInput by remember { mutableStateOf("") }
+    var passwordInput by remember { mutableStateOf("") }
+    var targetUrl by remember {
+        mutableStateOf(if (initialDomain.isNotBlank()) "https://$initialDomain" else "https://")
+    }
+    var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("Subscriber Login & Cookie Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("Log in once. PageVault saves your session & cookies locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = domainInput,
+                        onValueChange = { domainInput = it },
+                        label = { Text("Domain (e.g. nytimes.com)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.2f)
+                    )
+                    Button(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            val clean = domainInput.trim().removePrefix("https://").removePrefix("http://")
+                            val newUrl = if (clean.startsWith("http")) clean else "https://$clean"
+                            targetUrl = newUrl
+                            webViewInstance?.loadUrl(newUrl)
+                        },
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    ) {
+                        Text("Go")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = usernameInput,
+                        onValueChange = { usernameInput = it },
+                        label = { Text("Username / Email") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = passwordInput,
+                        onValueChange = { passwordInput = it },
+                        label = { Text("Password (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                webViewInstance = this
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                    userAgentString = PaywallBypassHelper.CHROME_MOBILE_USER_AGENT
+                                }
+                                CookieManager.getInstance().setAcceptCookie(true)
+                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        CookieManager.getInstance().flush()
+                                    }
+                                }
+                                if (targetUrl.isNotBlank() && targetUrl != "https://") {
+                                    loadUrl(targetUrl)
+                                }
+                            }
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            val cleanDomain = domainInput.trim().removePrefix("https://").removePrefix("http://").substringBefore("/")
+                            if (cleanDomain.isNotBlank()) {
+                                if (usernameInput.isNotBlank()) {
+                                    SiteCredentialManager.saveCredential(context, cleanDomain, usernameInput, passwordInput)
+                                }
+                                CookieManager.getInstance().flush()
+                                onLoginSaved()
+                            }
+                            onDismiss()
+                        }
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Save Session & Close")
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun VaultArticleCard(
@@ -68,9 +415,11 @@ fun VaultArticleCard(
     onDelete: () -> Unit,
     onRecaptureNoJs: (() -> Unit)? = null,
     onExportMarkdown: (() -> Unit)? = null,
+    onOpenMarkdown: ((ArchivedPage) -> Unit)? = null,
     onRepull: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val localView = LocalView.current
     var expanded by remember { mutableStateOf(false) }
     var showRevisionsAccordion by remember { mutableStateOf(false) }
 
@@ -79,7 +428,9 @@ fun VaultArticleCard(
             runCatching { Uri.parse(page.originalUrl).host?.removePrefix("www.") ?: "Web" }.getOrDefault("Web")
         }
     }
-    val accentColor = remember(domainLabel) { getDomainAccentColor(domainLabel) }
+    val brandColors = remember(page.originalUrl, page.siteName) {
+        DomainBrandPalette.resolveForSite(page.originalUrl, page.siteName)
+    }
     val secondsStr = remember(page.captureDurationMs) {
         if (page.captureDurationMs > 0) {
             String.format(Locale.US, "⏱ %.1fs", page.captureDurationMs / 1000.0)
@@ -97,18 +448,24 @@ fun VaultArticleCard(
             .animateContentSize()
             .clip(RoundedCornerShape(16.dp))
             .combinedClickable(
-                onClick = onCardClick,
-                onLongClick = onCardLongClick
+                onClick = {
+                    AppUiPreferences.triggerHaptic(localView)
+                    onCardClick()
+                },
+                onLongClick = {
+                    AppUiPreferences.triggerHaptic(localView, strong = true)
+                    onCardLongClick()
+                }
             ),
         shape = RoundedCornerShape(16.dp),
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-        else MaterialTheme.colorScheme.surface,
+        else brandColors.cardBackground,
         tonalElevation = 4.dp,
         border = BorderStroke(
             width = if (isSelected) 2.dp else 1.dp,
             brush = Brush.horizontalGradient(
                 colors = if (isSelected) listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
-                else listOf(accentColor.copy(alpha = 0.7f), MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                else listOf(brandColors.borderAccent.copy(alpha = 0.85f), brandColors.borderAccent.copy(alpha = 0.3f))
             )
         )
     ) {
@@ -129,7 +486,7 @@ fun VaultArticleCard(
                         alignment = Alignment.TopCenter,
                         modifier = Modifier.fillMaxSize()
                     )
-                    // Cyber-Vault gradient bottom scrim to blend smoothly into card body
+                    // Gradient bottom scrim blending into brand card background
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -137,8 +494,8 @@ fun VaultArticleCard(
                                 Brush.verticalGradient(
                                     colors = listOf(
                                         Color.Transparent,
-                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                                        MaterialTheme.colorScheme.surface
+                                        brandColors.cardBackground.copy(alpha = 0.6f),
+                                        brandColors.cardBackground
                                     ),
                                     startY = 60f
                                 )
@@ -148,7 +505,7 @@ fun VaultArticleCard(
             }
 
             Column(modifier = Modifier.padding(14.dp)) {
-                // Top Header Row: Domain Badge + Generation Time in Seconds + Version + Date
+                // Top Header Row: Brand Badge + Generation Time in Seconds + Version + Date
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -164,13 +521,13 @@ fun VaultArticleCard(
                             )
                         }
                         Surface(
-                            color = accentColor.copy(alpha = 0.16f),
+                            color = brandColors.badgeBackground,
                             shape = RoundedCornerShape(6.dp),
-                            border = BorderStroke(0.5.dp, accentColor.copy(alpha = 0.6f))
+                            border = BorderStroke(0.5.dp, brandColors.borderAccent)
                         ) {
                             Text(
                                 text = domainLabel.uppercase(),
-                                color = accentColor,
+                                color = brandColors.badgeText,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.ExtraBold,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -282,10 +639,9 @@ fun VaultArticleCard(
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(
+                                GeminiRainbowSpinner(
                                     modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.5.dp,
-                                    color = MaterialTheme.colorScheme.primary
+                                    strokeWidth = 2.5.dp
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Text(
@@ -541,10 +897,17 @@ fun VaultArticleCard(
                         }
                     }
 
-                    // 📝 AI Markdown Pill
-                    if (onExportMarkdown != null) {
+                    // 📝 Markdown Pill (Opens formatted viewer + copy/share)
+                    if (onOpenMarkdown != null || onExportMarkdown != null) {
                         Surface(
-                            onClick = onExportMarkdown,
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                if (onOpenMarkdown != null) {
+                                    onOpenMarkdown(page)
+                                } else {
+                                    onExportMarkdown?.invoke()
+                                }
+                            },
                             shape = RoundedCornerShape(12.dp),
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
                             border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
@@ -562,13 +925,13 @@ fun VaultArticleCard(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Column {
                                     Text(
-                                        "📝 AI Markdown",
+                                        "📝 Markdown",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        "Text for AI word-mapping",
+                                        "View formatted text",
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -679,14 +1042,18 @@ fun VaultCompactRow(
     onCardLongClick: () -> Unit,
     onExportPdf: () -> Unit,
     onExportMarkdown: (() -> Unit)? = null,
+    onOpenMarkdown: ((ArchivedPage) -> Unit)? = null,
     onDelete: () -> Unit
 ) {
+    val localView = LocalView.current
     val domainLabel = remember(page.siteName, page.originalUrl) {
         page.siteName.ifBlank {
             runCatching { Uri.parse(page.originalUrl).host?.removePrefix("www.") ?: "Web" }.getOrDefault("Web")
         }
     }
-    val accentColor = remember(domainLabel) { getDomainAccentColor(domainLabel) }
+    val brandColors = remember(page.originalUrl, page.siteName) {
+        DomainBrandPalette.resolveForSite(page.originalUrl, page.siteName)
+    }
     val oneSentenceSummary = remember(page.aiSummary, page.extractedTextSummary) {
         val raw = page.aiSummary.ifBlank { page.extractedTextSummary }
         val firstSentence = raw.split(Regex("(?<=[.!?])\\s+")).firstOrNull()?.trim().orEmpty()
@@ -698,16 +1065,22 @@ fun VaultCompactRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .combinedClickable(
-                onClick = onCardClick,
-                onLongClick = onCardLongClick
+                onClick = {
+                    AppUiPreferences.triggerHaptic(localView)
+                    onCardClick()
+                },
+                onLongClick = {
+                    AppUiPreferences.triggerHaptic(localView, strong = true)
+                    onCardLongClick()
+                }
             ),
         shape = RoundedCornerShape(12.dp),
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-        else MaterialTheme.colorScheme.surface,
+        else brandColors.cardBackground,
         tonalElevation = 2.dp,
         border = BorderStroke(
             width = if (isSelected) 2.dp else 0.8.dp,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else accentColor.copy(alpha = 0.4f)
+            color = if (isSelected) MaterialTheme.colorScheme.primary else brandColors.borderAccent.copy(alpha = 0.5f)
         )
     ) {
         Row(
@@ -718,7 +1091,7 @@ fun VaultCompactRow(
         ) {
             Surface(
                 shape = CircleShape,
-                color = accentColor,
+                color = brandColors.borderAccent,
                 modifier = Modifier.size(10.dp)
             ) {}
             Spacer(modifier = Modifier.width(10.dp))
@@ -728,7 +1101,7 @@ fun VaultCompactRow(
                         text = domainLabel.uppercase(),
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                         fontWeight = FontWeight.ExtraBold,
-                        color = accentColor
+                        color = brandColors.borderAccent
                     )
                     if (page.versionNumber > 1) {
                         Spacer(modifier = Modifier.width(6.dp))
@@ -757,15 +1130,37 @@ fun VaultCompactRow(
             }
             Spacer(modifier = Modifier.width(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onExportPdf, modifier = Modifier.size(28.dp)) {
+                IconButton(
+                    onClick = {
+                        AppUiPreferences.triggerHaptic(localView)
+                        onExportPdf()
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
                     Icon(Icons.Default.PictureAsPdf, contentDescription = "PDF", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                 }
-                if (onExportMarkdown != null) {
-                    IconButton(onClick = onExportMarkdown, modifier = Modifier.size(28.dp)) {
+                if (onOpenMarkdown != null || onExportMarkdown != null) {
+                    IconButton(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            if (onOpenMarkdown != null) {
+                                onOpenMarkdown(page)
+                            } else {
+                                onExportMarkdown?.invoke()
+                            }
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
                         Icon(Icons.Default.Description, contentDescription = "Markdown", tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
                     }
                 }
-                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                IconButton(
+                    onClick = {
+                        AppUiPreferences.triggerHaptic(localView)
+                        onDelete()
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
                     Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
                 }
             }
@@ -894,7 +1289,7 @@ fun SettingsAndAboutDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("PageVault Settings & About", fontWeight = FontWeight.Bold)
+                Text("WebVaultr Settings & About", fontWeight = FontWeight.Bold)
             }
         },
         text = {
@@ -913,6 +1308,107 @@ fun SettingsAndAboutDialog(
                             label = { Text(mode.name) }
                         )
                     }
+                }
+                HorizontalDivider()
+
+                // Master Haptic Feedback Toggle
+                val context = LocalContext.current
+                val localView = LocalView.current
+                val hapticsEnabled by AppUiPreferences.hapticsEnabled.collectAsState()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Global Haptic Feedback", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text("Tactile responses for taps, gestures, and button clicks", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = hapticsEnabled,
+                        onCheckedChange = {
+                            AppUiPreferences.setHapticsEnabled(context, it)
+                            AppUiPreferences.triggerHaptic(localView)
+                        }
+                    )
+                }
+                HorizontalDivider()
+
+                // Subscriber Credentials & Cookie Session Manager (AES-256)
+                var savedCreds by remember { mutableStateOf(SiteCredentialManager.getSavedCredentials(context)) }
+                var showLoginDialog by remember { mutableStateOf(false) }
+
+                Text("Subscriber Credentials & Sessions (AES-256)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("Log into publications to sync cookies and capture paywalled articles locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                if (savedCreds.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        savedCreds.forEach { cred ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(cred.domain, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                        Text("User: ${cred.username}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            AppUiPreferences.triggerHaptic(localView)
+                                            SiteCredentialManager.removeCredential(context, cred.domain)
+                                            savedCreds = SiteCredentialManager.getSavedCredentials(context)
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            showLoginDialog = true
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("+ Add Site Login")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            SiteCredentialManager.clearAllCredentialsAndSessions(context)
+                            savedCreds = emptyList()
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Clear Sessions")
+                    }
+                }
+
+                if (showLoginDialog) {
+                    InteractiveSiteLoginDialog(
+                        onDismiss = { showLoginDialog = false },
+                        onLoginSaved = {
+                            savedCreds = SiteCredentialManager.getSavedCredentials(context)
+                        }
+                    )
                 }
                 HorizontalDivider()
                 Text("Google AI Edge Model Selector", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1018,9 +1514,9 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About PageVault v0.6.9", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.8.1", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "PageVault is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
+                    "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1044,7 +1540,7 @@ fun SettingsAndAboutDialog(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            "github.com/laconiks/PageVault",
+                            "github.com/laconiks/webvaultr",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

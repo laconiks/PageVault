@@ -102,6 +102,12 @@ object PaywallBypassHelper {
             domStorageEnabled = true
             userAgentString = CHROME_MOBILE_USER_AGENT
         }
+        runCatching {
+            android.webkit.CookieManager.getInstance().apply {
+                setAcceptCookie(true)
+                setAcceptThirdPartyCookies(webView, true)
+            }
+        }
     }
 
     /**
@@ -130,10 +136,12 @@ object PaywallBypassHelper {
                     });
                 });
 
-                // 2. Ensure off-canvas mobile drawers (like NBC News blue menu) stay hidden
+                // 2. Ensure off-canvas mobile drawers (like NBC News blue menu) and state dropdowns stay hidden
                 var hiddenDrawers = [
                     '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
-                    '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]'
+                    '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]',
+                    'header ul', 'nav ul', '[class*="state-list"]', '[class*="navigation__list"]',
+                    '[class*="quick-links"]'
                 ];
                 hiddenDrawers.forEach(function(sel) {
                     document.querySelectorAll(sel).forEach(function(el) {

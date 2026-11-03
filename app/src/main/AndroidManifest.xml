@@ -10,7 +10,7 @@
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher_pagevault"
         android:roundIcon="@drawable/ic_launcher_pagevault"
-        android:label="PageVault"
+        android:label="WebVaultr"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
@@ -26,8 +26,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Chrome & System "Share to PageVault" Receiver -->
-            <intent-filter android:label="Vault in PageVault">
+            <!-- Chrome & System "Share to WebVaultr" Receiver -->
+            <intent-filter android:label="Vault in WebVaultr">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />

@@ -27,13 +27,13 @@ object DiagnosticLogHelper {
             val timestamp = fileDateFormatter.format(Date())
             val safeMake = Build.MANUFACTURER.replace(Regex("[^a-zA-Z0-9]"), "")
             val safeModel = Build.MODEL.replace(Regex("[^a-zA-Z0-9]"), "")
-            val fileName = "PageVault_Log_${safeMake}_${safeModel}_$timestamp.txt"
+            val fileName = "WebVaultr_Log_${safeMake}_${safeModel}_$timestamp.txt"
 
             val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
             val outFile = File(exportDir, fileName)
 
             val content = buildString {
-                appendLine("=== PageVault 0.6.9 Troubleshooting Log ===")
+                appendLine("=== WebVaultr 0.8.1 Troubleshooting Log ===")
                 appendLine("Device Make: ${Build.MANUFACTURER}")
                 appendLine("Device Model: ${Build.MODEL}")
                 appendLine("Android API Level: ${Build.VERSION.SDK_INT}")

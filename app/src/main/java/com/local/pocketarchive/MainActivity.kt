@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import com.local.pocketarchive.ui.ArchiveDashboardScreen
 import com.local.pocketarchive.ui.ArchiveViewModel
 import com.local.pocketarchive.ui.theme.PocketArchiveTheme
+import com.local.pocketarchive.util.AppUiPreferences
 
 class MainActivity : ComponentActivity() {
 
@@ -19,10 +20,12 @@ class MainActivity : ComponentActivity() {
         runCatching { android.webkit.WebView.enableSlowWholeDocumentDraw() }
         super.onCreate(savedInstanceState)
 
+        AppUiPreferences.init(applicationContext)
+
         handleIncomingShareIntent(intent)
 
         setContent {
-            val themeMode by viewModel.themeMode.collectAsState()
+            val themeMode by AppUiPreferences.themeMode.collectAsState()
             PocketArchiveTheme(themeMode = themeMode) {
                 ArchiveDashboardScreen(viewModel = viewModel)
             }

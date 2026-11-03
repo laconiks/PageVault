@@ -1,8 +1,8 @@
-# 🛡️ PageVault
+# 🛡️ WebVaultr
 
 > **Local-First Web Preservation & On-Device AI Knowledge Vault for Android**
 
-PageVault is an open-source, client-side Android application designed to capture complete, uncompromised snapshots of web articles and research materials. Unlike traditional "read-it-later" utilities that discard layout formatting and dynamic assets, PageVault captures the full Document Object Model (DOM) as an RFC-compliant MHTML archive while simultaneously generating an off-screen, full-height visual screenshot—processed and indexed entirely on your device's local silicon.
+WebVaultr is an open-source, client-side Android application designed to capture complete, uncompromised snapshots of web articles and research materials. Unlike traditional "read-it-later" utilities that discard layout formatting and dynamic assets, WebVaultr captures the full Document Object Model (DOM) as an RFC-compliant MHTML archive while simultaneously generating an off-screen, full-height visual screenshot—processed and indexed entirely on your device's local silicon.
 
 ---
 
@@ -78,7 +78,7 @@ PageVault is an open-source, client-side Android application designed to capture
 
 ## 🔒 Privacy & Local-First Commitment
 
-PageVault is built on strict data privacy principles:
+WebVaultr is built on strict data privacy principles:
 * **Zero External Analytics or Trackers:** The application contains no telemetry or remote analytics SDKs.
 * **No Relay Servers:** Web requests originate exclusively from the local device Chromium runtime, identical to standard mobile web navigation.
 * **App-Private Storage:** Snapshots, cached assets, and SQLite databases reside within `context.filesDir` and cannot be accessed by other applications without explicit user export actions.
@@ -87,5 +87,5 @@ PageVault is built on strict data privacy principles:
 
 ## ⚖️ License & Privacy
 
-* **Privacy First:** PageVault operates entirely offline. No browsing history, queries, or captured archives are ever transmitted to external servers.
+* **Privacy First:** WebVaultr operates entirely offline. No browsing history, queries, or captured archives are ever transmitted to external servers.
 * **License:** Distributed under the [MIT License](License.md). See the [License.md](License.md) file for full details.               

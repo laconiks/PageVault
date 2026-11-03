@@ -5,7 +5,35 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-enum class ThemeMode { SYSTEM, LIGHT, DARK }
+enum class ThemeMode(val label: String) {
+    CYBER("Cyber"),
+    DARK("Dark"),
+    LIGHT("Light"),
+    SYSTEM("System")
+}
+
+// Cyberpunk-Vault Palette (Cyber Yellow + Neon Cyan + Cyber Magenta + Void Black)
+private val CyberColorScheme = darkColorScheme(
+    primary = Color(0xFFFCEE09),          // Cyber Yellow
+    onPrimary = Color(0xFF050508),        // Void Black
+    primaryContainer = Color(0xFF2E2C00),
+    onPrimaryContainer = Color(0xFFFFF98F),
+    secondary = Color(0xFF00F0FF),        // Neon Cyan / Blue
+    onSecondary = Color(0xFF00292E),
+    secondaryContainer = Color(0xFF004952),
+    onSecondaryContainer = Color(0xFF94F8FF),
+    tertiary = Color(0xFFFF003C),         // Cyber Magenta
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFF4D0012),
+    onTertiaryContainer = Color(0xFFFFB3C1),
+    background = Color(0xFF050508),       // Void Black
+    onBackground = Color(0xFFE8E8F5),
+    surface = Color(0xFF0D0D15),          // Deep Void Slate Card Surface
+    onSurface = Color(0xFFF5F5FA),
+    surfaceVariant = Color(0xFF161624),   // Elevated Dark Neon Surface/Pill
+    onSurfaceVariant = Color(0xFF9898B5),
+    error = Color(0xFFFF003C)
+)
 
 // Cyber-Vault Dark Palette (Obsidian Slate + Laser Cyan + Vault Gold)
 private val VaultDarkColorScheme = darkColorScheme(
@@ -49,16 +77,15 @@ private val VaultLightColorScheme = lightColorScheme(
 
 @Composable
 fun PocketArchiveTheme(
-    themeMode: ThemeMode = ThemeMode.DARK,
+    themeMode: ThemeMode = ThemeMode.CYBER,
     content: @Composable () -> Unit
 ) {
-    val useDarkTheme = when (themeMode) {
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ThemeMode.DARK -> true
-        ThemeMode.LIGHT -> false
+    val colorScheme = when (themeMode) {
+        ThemeMode.CYBER -> CyberColorScheme
+        ThemeMode.DARK -> VaultDarkColorScheme
+        ThemeMode.LIGHT -> VaultLightColorScheme
+        ThemeMode.SYSTEM -> if (isSystemInDarkTheme()) VaultDarkColorScheme else VaultLightColorScheme
     }
-
-    val colorScheme = if (useDarkTheme) VaultDarkColorScheme else VaultLightColorScheme
 
     MaterialTheme(
         colorScheme = colorScheme,

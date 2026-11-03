@@ -15,12 +15,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.local.pocketarchive.data.local.ArchivedPage
+import com.local.pocketarchive.data.local.CaptureStatus
 import com.local.pocketarchive.ui.components.*
+import com.local.pocketarchive.util.AppUiPreferences
 import com.local.pocketarchive.util.ExportAndShareHelper
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -34,12 +37,14 @@ data class ArticleChain(
 @Composable
 fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     val context = LocalContext.current
+    val localView = LocalView.current
     val scope = rememberCoroutineScope()
     val exportHelper = remember { ExportAndShareHelper(context) }
 
     val pages by viewModel.archivedPages.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isCapturing by viewModel.isCapturing.collectAsState()
+    val capturingUrl by viewModel.capturingUrl.collectAsState()
     val selectedUuids by viewModel.selectedUuids.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val isGroupedByWebsite by viewModel.isGroupedByWebsite.collectAsState()
@@ -55,6 +60,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     var urlInput by remember { mutableStateOf("") }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showRssDialog by remember { mutableStateOf(false) }
+    var viewingMarkdownPage by remember { mutableStateOf<ArchivedPage?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -65,6 +71,13 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 message = "⚡ $message",
                 duration = SnackbarDuration.Short
             )
+        }
+    }
+
+    // Deduplication check: Suppress top banner if an existing or pending card in the list already shows in-card progress
+    val isCardAlreadyRendering = remember(capturingUrl, pages) {
+        capturingUrl != null && pages.any {
+            it.originalUrl.equals(capturingUrl, ignoreCase = true) || it.status == CaptureStatus.PENDING
         }
     }
 
@@ -109,12 +122,16 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 TopAppBar(
                     title = { Text("${selectedUuids.size} Selected", fontWeight = FontWeight.Bold) },
                     navigationIcon = {
-                        IconButton(onClick = { viewModel.clearSelection() }) {
+                        IconButton(onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            viewModel.clearSelection()
+                        }) {
                             Icon(Icons.Default.Close, contentDescription = "Clear Selection")
                         }
                     },
                     actions = {
                         IconButton(onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
                             val selectedPages = pages.filter { selectedUuids.contains(it.uuid) }
                             scope.launch {
                                 val mdFile = exportHelper.generateBatchMarkdown(selectedPages)
@@ -129,6 +146,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                             Icon(Icons.Default.Description, contentDescription = "Export Batch Markdown")
                         }
                         IconButton(onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
                             val selectedPages = pages.filter { selectedUuids.contains(it.uuid) }
                             scope.launch {
                                 val pdfFile = exportHelper.generateBatchPdf(selectedPages)
@@ -153,12 +171,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.Shield,
-                                contentDescription = "PageVault",
+                                contentDescription = "WebVaultr",
                                 tint = MaterialTheme.colorScheme.primary
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
-                                Text("PageVault", fontWeight = FontWeight.ExtraBold)
+                                Text("WebVaultr", fontWeight = FontWeight.ExtraBold)
                                 Text(
                                     "LOCAL AI EDGE ARCHIVER",
                                     style = MaterialTheme.typography.labelSmall,
@@ -168,7 +186,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showRssDialog = true }) {
+                        IconButton(onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            showRssDialog = true
+                        }) {
                             BadgedBox(
                                 badge = {
                                     if (rssSubscriptions.isNotEmpty()) {
@@ -183,7 +204,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                 )
                             }
                         }
-                        IconButton(onClick = { showSettingsDialog = true }) {
+                        IconButton(onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            showSettingsDialog = true
+                        }) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings & About")
                         }
                     }
@@ -231,6 +255,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     OutlinedButton(
                         onClick = {
                             if (urlInput.isNotBlank()) {
+                                AppUiPreferences.triggerHaptic(localView)
                                 viewModel.addToQueue(urlInput)
                                 urlInput = ""
                             }
@@ -245,6 +270,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     Button(
                         onClick = {
                             if (urlInput.isNotBlank()) {
+                                AppUiPreferences.triggerHaptic(localView)
                                 viewModel.captureAndIndexUrl(urlInput)
                                 urlInput = ""
                             }
@@ -254,10 +280,9 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                     ) {
                         if (isCapturing) {
-                            CircularProgressIndicator(
+                            GeminiRainbowSpinner(
                                 modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary
+                                strokeWidth = 2.dp
                             )
                         } else {
                             Text("Vault", fontWeight = FontWeight.Bold)
@@ -292,7 +317,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                 )
                             }
                             TextButton(
-                                onClick = { viewModel.clearQueue() },
+                                onClick = {
+                                    AppUiPreferences.triggerHaptic(localView)
+                                    viewModel.clearQueue()
+                                },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 Text("Clear", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
@@ -308,7 +336,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                 val domain = runCatching { Uri.parse(qUrl).host?.removePrefix("www.") ?: qUrl }.getOrDefault(qUrl)
                                 InputChip(
                                     selected = false,
-                                    onClick = { viewModel.removeFromQueue(qUrl) },
+                                    onClick = {
+                                        AppUiPreferences.triggerHaptic(localView)
+                                        viewModel.removeFromQueue(qUrl)
+                                    },
                                     label = { Text(domain, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                     trailingIcon = {
                                         Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
@@ -318,13 +349,16 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
-                            onClick = { viewModel.processQueue() },
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                viewModel.processQueue()
+                            },
                             enabled = !isCapturing,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             if (isCapturing) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                                GeminiRainbowSpinner(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Processing Queue...")
                             } else {
@@ -337,8 +371,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 }
             }
 
-            // Dynamic Live Capture Progress Banner
-            if (isCapturing) {
+            // Dynamic Live Capture Progress Banner (Deduplicated: hidden if card is already rendering)
+            if (isCapturing && !isCardAlreadyRendering) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -348,10 +382,9 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(
+                            GeminiRainbowSpinner(
                                 modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.5.dp,
-                                color = MaterialTheme.colorScheme.primary
+                                strokeWidth = 2.5.dp
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
@@ -386,7 +419,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                            IconButton(onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                viewModel.updateSearchQuery("")
+                            }) {
                                 Icon(Icons.Default.Clear, contentDescription = "Clear")
                             }
                         }
@@ -397,7 +433,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 Spacer(modifier = Modifier.width(6.dp))
                 FilterChip(
                     selected = isGroupedByWebsite,
-                    onClick = { viewModel.toggleGroupByWebsite() },
+                    onClick = {
+                        AppUiPreferences.triggerHaptic(localView)
+                        viewModel.toggleGroupByWebsite()
+                    },
                     label = { Text("By Site") },
                     leadingIcon = {
                         Icon(
@@ -410,7 +449,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 Spacer(modifier = Modifier.width(6.dp))
                 FilterChip(
                     selected = isOneSentenceView,
-                    onClick = { viewModel.toggleOneSentenceView() },
+                    onClick = {
+                        AppUiPreferences.triggerHaptic(localView)
+                        viewModel.toggleOneSentenceView()
+                    },
                     label = { Text(if (isOneSentenceView) "1-Sentence" else "Full") },
                     leadingIcon = {
                         Icon(
@@ -439,14 +481,14 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = if (searchQuery.isNotBlank()) "No matching articles found for '$searchQuery'" else "Your PageVault is Empty",
+                            text = if (searchQuery.isNotBlank()) "No matching articles found for '$searchQuery'" else "Your WebVaultr is Empty",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = if (searchQuery.isNotBlank()) "Try searching different keywords, tags, or domain names" else "Insert a page above or use Chrome -> Share -> PageVault",
+                            text = if (searchQuery.isNotBlank()) "Try searching different keywords, tags, or domain names" else "Insert a page above or use Chrome -> Share -> WebVaultr",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -528,6 +570,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 }
                                             }
                                         },
+                                        onOpenMarkdown = { viewingMarkdownPage = it },
                                         onDelete = { viewModel.deleteArchive(page) }
                                     )
                                 } else {
@@ -574,7 +617,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                     snackbarHostState.showSnackbar("Failed to generate Markdown")
                                                 }
                                             }
-                                        }
+                                        },
+                                        onOpenMarkdown = { viewingMarkdownPage = it }
                                     )
                                 }
                             }
@@ -620,6 +664,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                             }
                                         }
                                     },
+                                    onOpenMarkdown = { viewingMarkdownPage = it },
                                     onDelete = { viewModel.deleteArchive(page) }
                                 )
                             } else {
@@ -666,7 +711,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 snackbarHostState.showSnackbar("Failed to generate Markdown")
                                             }
                                         }
-                                    }
+                                    },
+                                    onOpenMarkdown = { viewingMarkdownPage = it }
                                 )
                             }
                         }
@@ -674,6 +720,24 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 }
             }
         }
+    }
+
+    // In-App Markdown Viewer Dialog
+    viewingMarkdownPage?.let { page ->
+        MarkdownViewerDialog(
+            page = page,
+            onDismiss = { viewingMarkdownPage = null },
+            onShareMarkdown = {
+                scope.launch {
+                    val md = exportHelper.generateSinglePageMarkdown(page)
+                    if (md != null) {
+                        exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                    } else {
+                        snackbarHostState.showSnackbar("Failed to generate Markdown")
+                    }
+                }
+            }
+        )
     }
 
     if (showRssDialog) {

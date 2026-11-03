@@ -73,6 +73,12 @@ class WebArchiveCaptureManager(private val context: Context) {
                     });
                     var metaSite = document.querySelector('meta[property="og:site_name"]');
                     var metaAuthor = document.querySelector('meta[name="author"]') || document.querySelector('meta[property="article:author"]');
+                    var metaOgTitle = document.querySelector('meta[property="og:title"]') || document.querySelector('meta[name="twitter:title"]');
+                    var h1Title = document.querySelector('h1');
+                    var rawTitle = (document.title || '').trim();
+                    var resolvedPageTitle = (rawTitle && rawTitle.toLowerCase().indexOf('just a moment') === -1)
+                        ? rawTitle
+                        : ((metaOgTitle && metaOgTitle.content) || (h1Title && (h1Title.innerText || h1Title.textContent)) || rawTitle);
 
                     var root = document.querySelector('article') ||
                                document.querySelector('[role="main"]') ||
@@ -157,7 +163,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     }
 
                     var payload = JSON.stringify({
-                        title: document.title || '',
+                        title: resolvedPageTitle || '',
                         siteName: metaSite ? metaSite.content : '',
                         author: metaAuthor ? metaAuthor.content : '',
                         scrollHeight: Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0),
@@ -429,6 +435,11 @@ class WebArchiveCaptureManager(private val context: Context) {
             }
 
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                val currentTitle = (view ?: webView).title.orEmpty()
+                if (currentTitle.contains("Just a moment", ignoreCase = true)) {
+                    DiagnosticLogHelper.log(TAG, "onPageFinished fired with 'Just a moment...' placeholder; waiting for hydration")
+                    return
+                }
                 DiagnosticLogHelper.log(TAG, "onPageFinished: $finishedUrl")
                 val targetView = view ?: webView
                 PaywallBypassHelper.unlockAndSanitizeDom(targetView) {

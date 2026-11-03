@@ -21,6 +21,7 @@ import com.local.pocketarchive.data.local.CaptureStatus
 import com.local.pocketarchive.data.local.RssSubscription
 import com.local.pocketarchive.data.repository.ArchiveRepository
 import com.local.pocketarchive.ui.theme.ThemeMode
+import com.local.pocketarchive.util.AppUiPreferences
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,8 +57,10 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
     private val _selectedUuids = MutableStateFlow<Set<String>>(emptySet())
     val selectedUuids: StateFlow<Set<String>> = _selectedUuids.asStateFlow()
 
-    private val _themeMode = MutableStateFlow(ThemeMode.DARK)
-    val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
+    private val _capturingUrl = MutableStateFlow<String?>(null)
+    val capturingUrl: StateFlow<String?> = _capturingUrl.asStateFlow()
+
+    val themeMode: StateFlow<ThemeMode> = AppUiPreferences.themeMode
 
     private val _aiModel = MutableStateFlow(aiProcessor.currentModel)
     val aiModel: StateFlow<AiEdgeModel> = _aiModel.asStateFlow()
@@ -83,7 +86,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setThemeMode(mode: ThemeMode) {
-        _themeMode.value = mode
+        AppUiPreferences.setThemeMode(getApplication(), mode)
     }
 
     private val _showEdgeOnboarding = MutableStateFlow(aiProcessor.isFirstLaunchOnboardingNeeded())
@@ -172,28 +175,33 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
             var count = 0
             val total = queue.size
 
-            for (url in queue) {
-                _queuedUrls.update { it - url }
-                count++
-                val queuePrefix = "Queue ($count/$total): "
-                _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & bypassing paywall..."
-                val startMs = System.currentTimeMillis()
+            try {
+                for (url in queue) {
+                    _capturingUrl.value = url
+                    _queuedUrls.update { it - url }
+                    count++
+                    val queuePrefix = "Queue ($count/$total): "
+                    _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & bypassing paywall..."
+                    val startMs = System.currentTimeMillis()
 
-                repository.captureAndIndexUrl(
-                    rawUrl = url,
-                    spoofCrawler = true,
-                    disableJs = false,
-                    preferredModel = _aiModel.value,
-                    onStageUpdate = { stage -> _captureStageText.value = "$queuePrefix$stage" }
-                ).onSuccess {
-                    val durationMs = System.currentTimeMillis() - startMs
-                    val sec = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
-                    _uiAlerts.tryEmit("Vaulted [$count/$total] in $sec")
-                }.onFailure { e ->
-                    _uiAlerts.tryEmit("Failed [$count/$total]: ${e.localizedMessage ?: "Error"}")
+                    repository.captureAndIndexUrl(
+                        rawUrl = url,
+                        spoofCrawler = true,
+                        disableJs = false,
+                        preferredModel = _aiModel.value,
+                        onStageUpdate = { stage -> _captureStageText.value = "$queuePrefix$stage" }
+                    ).onSuccess {
+                        val durationMs = System.currentTimeMillis() - startMs
+                        val sec = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                        _uiAlerts.tryEmit("Vaulted [$count/$total] in $sec")
+                    }.onFailure { e ->
+                        _uiAlerts.tryEmit("Failed [$count/$total]: ${e.localizedMessage ?: "Error"}")
+                    }
                 }
+            } finally {
+                _capturingUrl.value = null
+                _isCapturing.value = false
             }
-            _isCapturing.value = false
         }
     }
 
@@ -209,23 +217,28 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             _isCapturing.value = true
+            _capturingUrl.value = cleanUrl
             _captureStageText.value = "Step 1/4: Connecting & bypassing paywall..."
             val startTimeMs = System.currentTimeMillis()
 
-            repository.captureAndIndexUrl(
-                rawUrl = cleanUrl,
-                spoofCrawler = spoofCrawler,
-                disableJs = disableJs,
-                preferredModel = _aiModel.value,
-                onStageUpdate = { stage -> _captureStageText.value = stage }
-            ).onSuccess {
-                val durationMs = System.currentTimeMillis() - startTimeMs
-                val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
-                _uiAlerts.tryEmit("Generated in $secondsFormatted")
-            }.onFailure { e ->
-                _uiAlerts.tryEmit("Error: ${e.localizedMessage ?: "Capture failed"}")
+            try {
+                repository.captureAndIndexUrl(
+                    rawUrl = cleanUrl,
+                    spoofCrawler = spoofCrawler,
+                    disableJs = disableJs,
+                    preferredModel = _aiModel.value,
+                    onStageUpdate = { stage -> _captureStageText.value = stage }
+                ).onSuccess {
+                    val durationMs = System.currentTimeMillis() - startTimeMs
+                    val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                    _uiAlerts.tryEmit("Generated in $secondsFormatted")
+                }.onFailure { e ->
+                    _uiAlerts.tryEmit("Error: ${e.localizedMessage ?: "Capture failed"}")
+                }
+            } finally {
+                _capturingUrl.value = null
+                _isCapturing.value = false
             }
-            _isCapturing.value = false
         }
     }
 
@@ -233,6 +246,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         val rootUuid = existingPage.parentUuid ?: existingPage.uuid
         viewModelScope.launch {
             _isCapturing.value = true
+            _capturingUrl.value = existingPage.originalUrl
             _captureStageText.value = "Step 1/4: Connecting & bypassing paywall..."
             val startTimeMs = System.currentTimeMillis()
             val nextVersion = dao.getVersionCountForChain(rootUuid) + 1
@@ -300,6 +314,7 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
                 dao.deletePage(pendingRevision)
                 _uiAlerts.tryEmit("Error comparing article versions")
             } finally {
+                _capturingUrl.value = null
                 _isCapturing.value = false
             }
         }
