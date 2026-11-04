@@ -1,11 +1,11 @@
-package com.local.pocketarchive.data.repository
+package com.local.webvaultr.data.repository
 
-import com.local.pocketarchive.ai.AiEdgeModel
-import com.local.pocketarchive.ai.LocalAiEdgeProcessor
-import com.local.pocketarchive.capture.WebArchiveCaptureManager
-import com.local.pocketarchive.data.local.ArchiveDao
-import com.local.pocketarchive.data.local.ArchivedPage
-import com.local.pocketarchive.data.local.CaptureStatus
+import com.local.webvaultr.ai.AiEdgeModel
+import com.local.webvaultr.ai.LocalAiEdgeProcessor
+import com.local.webvaultr.capture.WebArchiveCaptureManager
+import com.local.webvaultr.data.local.ArchiveDao
+import com.local.webvaultr.data.local.ArchivedPage
+import com.local.webvaultr.data.local.CaptureStatus
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 import java.util.UUID

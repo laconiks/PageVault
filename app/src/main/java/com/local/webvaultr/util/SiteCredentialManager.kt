@@ -1,4 +1,4 @@
-package com.local.pocketarchive.util
+package com.local.webvaultr.util
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
@@ -8,7 +8,7 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import android.webkit.CookieManager
 import androidx.compose.ui.graphics.Color
-import com.local.pocketarchive.ui.theme.ThemeMode
+import com.local.webvaultr.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

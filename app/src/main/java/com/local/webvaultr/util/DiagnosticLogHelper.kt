@@ -1,4 +1,4 @@
-package com.local.pocketarchive.util
+package com.local.webvaultr.util
 
 import android.content.Context
 import android.os.Build
@@ -33,7 +33,7 @@ object DiagnosticLogHelper {
             val outFile = File(exportDir, fileName)
 
             val content = buildString {
-                appendLine("=== WebVaultr 0.8.2 Troubleshooting Log ===")
+                appendLine("=== WebVaultr 0.8.3 Troubleshooting Log ===")
                 appendLine("Device Make: ${Build.MANUFACTURER}")
                 appendLine("Device Model: ${Build.MODEL}")
                 appendLine("Android API Level: ${Build.VERSION.SDK_INT}")

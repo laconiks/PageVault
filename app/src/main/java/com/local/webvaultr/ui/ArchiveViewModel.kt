@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ui
+package com.local.webvaultr.ui
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -10,18 +10,18 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import com.local.pocketarchive.ai.AiEdgeModel
-import com.local.pocketarchive.ai.EdgeModelOption
-import com.local.pocketarchive.ai.LocalAiEdgeProcessor
-import com.local.pocketarchive.capture.RssFeedScraperWorker
-import com.local.pocketarchive.capture.WebArchiveCaptureManager
-import com.local.pocketarchive.data.local.ArchiveDatabase
-import com.local.pocketarchive.data.local.ArchivedPage
-import com.local.pocketarchive.data.local.CaptureStatus
-import com.local.pocketarchive.data.local.RssSubscription
-import com.local.pocketarchive.data.repository.ArchiveRepository
-import com.local.pocketarchive.ui.theme.ThemeMode
-import com.local.pocketarchive.util.AppUiPreferences
+import com.local.webvaultr.ai.AiEdgeModel
+import com.local.webvaultr.ai.EdgeModelOption
+import com.local.webvaultr.ai.LocalAiEdgeProcessor
+import com.local.webvaultr.capture.RssFeedScraperWorker
+import com.local.webvaultr.capture.WebArchiveCaptureManager
+import com.local.webvaultr.data.local.ArchiveDatabase
+import com.local.webvaultr.data.local.ArchivedPage
+import com.local.webvaultr.data.local.CaptureStatus
+import com.local.webvaultr.data.local.RssSubscription
+import com.local.webvaultr.data.repository.ArchiveRepository
+import com.local.webvaultr.ui.theme.ThemeMode
+import com.local.webvaultr.util.AppUiPreferences
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,12 +35,15 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ArchiveViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val captureMutex = Mutex()
     private val database = ArchiveDatabase.getInstance(application)
     private val dao = database.archiveDao()
     private val captureManager = WebArchiveCaptureManager(application)
@@ -168,39 +171,42 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
 
     fun processQueue() {
         val queue = _queuedUrls.value
-        if (queue.isEmpty() || _isCapturing.value) return
+        if (queue.isEmpty()) return
 
         viewModelScope.launch {
-            _isCapturing.value = true
-            var count = 0
-            val total = queue.size
+            captureMutex.withLock {
+                _isCapturing.value = true
+                var count = 0
+                val total = _queuedUrls.value.size
 
-            try {
-                for (url in queue) {
-                    _capturingUrl.value = url
-                    _queuedUrls.update { it - url }
-                    count++
-                    val queuePrefix = "Queue ($count/$total): "
-                    _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & archiving page..."
-                    val startMs = System.currentTimeMillis()
+                try {
+                    while (_queuedUrls.value.isNotEmpty()) {
+                        val url = _queuedUrls.value.first()
+                        _capturingUrl.value = url
+                        _queuedUrls.update { it - url }
+                        count++
+                        val queuePrefix = "Queue ($count/$total): "
+                        _captureStageText.value = "${queuePrefix}Step 1/4: Connecting & archiving page..."
+                        val startMs = System.currentTimeMillis()
 
-                    repository.captureAndIndexUrl(
-                        rawUrl = url,
-                        spoofCrawler = true,
-                        disableJs = false,
-                        preferredModel = _aiModel.value,
-                        onStageUpdate = { stage -> _captureStageText.value = "$queuePrefix$stage" }
-                    ).onSuccess {
-                        val durationMs = System.currentTimeMillis() - startMs
-                        val sec = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
-                        _uiAlerts.tryEmit("Vaulted [$count/$total] in $sec")
-                    }.onFailure { e ->
-                        _uiAlerts.tryEmit("Failed [$count/$total]: ${e.localizedMessage ?: "Error"}")
+                        repository.captureAndIndexUrl(
+                            rawUrl = url,
+                            spoofCrawler = true,
+                            disableJs = false,
+                            preferredModel = _aiModel.value,
+                            onStageUpdate = { stage -> _captureStageText.value = "$queuePrefix$stage" }
+                        ).onSuccess {
+                            val durationMs = System.currentTimeMillis() - startMs
+                            val sec = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                            _uiAlerts.tryEmit("Vaulted [$count/$total] in $sec")
+                        }.onFailure { e ->
+                            _uiAlerts.tryEmit("Failed [$count/$total]: ${e.localizedMessage ?: "Error"}")
+                        }
                     }
+                } finally {
+                    _capturingUrl.value = null
+                    _isCapturing.value = false
                 }
-            } finally {
-                _capturingUrl.value = null
-                _isCapturing.value = false
             }
         }
     }
@@ -216,28 +222,30 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
         if (cleanUrl.isBlank()) return
 
         viewModelScope.launch {
-            _isCapturing.value = true
-            _capturingUrl.value = cleanUrl
-            _captureStageText.value = "Step 1/4: Connecting & archiving page..."
-            val startTimeMs = System.currentTimeMillis()
+            captureMutex.withLock {
+                _isCapturing.value = true
+                _capturingUrl.value = cleanUrl
+                _captureStageText.value = "Step 1/4: Connecting & archiving page..."
+                val startTimeMs = System.currentTimeMillis()
 
-            try {
-                repository.captureAndIndexUrl(
-                    rawUrl = cleanUrl,
-                    spoofCrawler = spoofCrawler,
-                    disableJs = disableJs,
-                    preferredModel = _aiModel.value,
-                    onStageUpdate = { stage -> _captureStageText.value = stage }
-                ).onSuccess {
-                    val durationMs = System.currentTimeMillis() - startTimeMs
-                    val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
-                    _uiAlerts.tryEmit("Generated in $secondsFormatted")
-                }.onFailure { e ->
-                    _uiAlerts.tryEmit("Error: ${e.localizedMessage ?: "Capture failed"}")
+                try {
+                    repository.captureAndIndexUrl(
+                        rawUrl = cleanUrl,
+                        spoofCrawler = spoofCrawler,
+                        disableJs = disableJs,
+                        preferredModel = _aiModel.value,
+                        onStageUpdate = { stage -> _captureStageText.value = stage }
+                    ).onSuccess {
+                        val durationMs = System.currentTimeMillis() - startTimeMs
+                        val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                        _uiAlerts.tryEmit("Generated in $secondsFormatted")
+                    }.onFailure { e ->
+                        _uiAlerts.tryEmit("Error: ${e.localizedMessage ?: "Capture failed"}")
+                    }
+                } finally {
+                    _capturingUrl.value = null
+                    _isCapturing.value = false
                 }
-            } finally {
-                _capturingUrl.value = null
-                _isCapturing.value = false
             }
         }
     }
@@ -245,77 +253,79 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
     fun repullAndCompareArticle(existingPage: ArchivedPage) {
         val rootUuid = existingPage.parentUuid ?: existingPage.uuid
         viewModelScope.launch {
-            _isCapturing.value = true
-            _capturingUrl.value = existingPage.originalUrl
-            _captureStageText.value = "Step 1/4: Connecting & archiving page..."
-            val startTimeMs = System.currentTimeMillis()
-            val nextVersion = dao.getVersionCountForChain(rootUuid) + 1
+            captureMutex.withLock {
+                _isCapturing.value = true
+                _capturingUrl.value = existingPage.originalUrl
+                _captureStageText.value = "Step 1/4: Connecting & archiving page..."
+                val startTimeMs = System.currentTimeMillis()
+                val nextVersion = dao.getVersionCountForChain(rootUuid) + 1
 
-            val pendingRevision = ArchivedPage(
-                originalUrl = existingPage.originalUrl,
-                title = "Re-Pulling v$nextVersion: ${existingPage.title}",
-                parentUuid = rootUuid,
-                versionNumber = nextVersion,
-                status = CaptureStatus.PENDING
-            )
-            dao.upsertPage(pendingRevision)
+                val pendingRevision = ArchivedPage(
+                    originalUrl = existingPage.originalUrl,
+                    title = "Re-Pulling v$nextVersion: ${existingPage.title}",
+                    parentUuid = rootUuid,
+                    versionNumber = nextVersion,
+                    status = CaptureStatus.PENDING
+                )
+                dao.upsertPage(pendingRevision)
 
-            try {
-                _captureStageText.value = "Step 2/4: Locking page layout & capturing preview image..."
-                val snapshot = captureManager.captureUrlSnapshot(existingPage.originalUrl, pendingRevision.uuid)
-                if (snapshot != null) {
-                    _captureStageText.value = "Step 3/4: Extracting article text & OCR..."
-                    val ocrText = snapshot.screenshotPath?.let { path ->
-                        aiProcessor.extractOcrFromScreenshot(path)
-                    } ?: ""
+                try {
+                    _captureStageText.value = "Step 2/4: Locking page layout & capturing preview image..."
+                    val snapshot = captureManager.captureUrlSnapshot(existingPage.originalUrl, pendingRevision.uuid)
+                    if (snapshot != null) {
+                        _captureStageText.value = "Step 3/4: Extracting article text & OCR..."
+                        val ocrText = snapshot.screenshotPath?.let { path ->
+                            aiProcessor.extractOcrFromScreenshot(path)
+                        } ?: ""
 
-                    _captureStageText.value = "Step 4/4: Writing offline summary..."
-                    val aiResult = aiProcessor.summarizeAndTag(
-                        title = snapshot.pageTitle,
-                        rawText = snapshot.extractedDomText,
-                        ocrText = ocrText
-                    )
+                        _captureStageText.value = "Step 4/4: Writing offline summary..."
+                        val aiResult = aiProcessor.summarizeAndTag(
+                            title = snapshot.pageTitle,
+                            rawText = snapshot.extractedDomText,
+                            ocrText = ocrText
+                        )
 
-                    val diffSummary = aiProcessor.compareArticleVersions(
-                        oldTitle = existingPage.title,
-                        oldText = existingPage.extractedTextSummary,
-                        newTitle = snapshot.pageTitle.ifBlank { existingPage.title },
-                        newText = snapshot.extractedDomText
-                    )
+                        val diffSummary = aiProcessor.compareArticleVersions(
+                            oldTitle = existingPage.title,
+                            oldText = existingPage.extractedTextSummary,
+                            newTitle = snapshot.pageTitle.ifBlank { existingPage.title },
+                            newText = snapshot.extractedDomText
+                        )
 
-                    val durationMs = System.currentTimeMillis() - startTimeMs
-                    val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
+                        val durationMs = System.currentTimeMillis() - startTimeMs
+                        val secondsFormatted = String.format(Locale.US, "%.1fs", durationMs / 1000.0)
 
-                    val completedRevision = pendingRevision.copy(
-                        title = snapshot.pageTitle.ifBlank { existingPage.title },
-                        siteName = snapshot.siteName.ifBlank { existingPage.siteName },
-                        author = snapshot.author.ifBlank { existingPage.author },
-                        mhtmlFilePath = snapshot.mhtmlPath,
-                        screenshotFilePath = snapshot.screenshotPath,
-                        extractedTextSummary = snapshot.extractedDomText.take(65000),
-                        aiSummary = aiResult.summary,
-                        aiTags = (aiResult.tags + listOf("v$nextVersion-Diff")).distinct(),
-                        ocrText = ocrText,
-                        captureDurationMs = durationMs,
-                        parentUuid = rootUuid,
-                        versionNumber = nextVersion,
-                        changeDiffSummary = diffSummary,
-                        aiModelUsed = aiResult.modelLabel,
-                        status = CaptureStatus.COMPLETED
-                    )
-                    dao.upsertPage(completedRevision)
-                    dao.rebuildFts()
-                    _uiAlerts.tryEmit("Generated v$nextVersion + AI Diff in $secondsFormatted")
-                } else {
+                        val completedRevision = pendingRevision.copy(
+                            title = snapshot.pageTitle.ifBlank { existingPage.title },
+                            siteName = snapshot.siteName.ifBlank { existingPage.siteName },
+                            author = snapshot.author.ifBlank { existingPage.author },
+                            mhtmlFilePath = snapshot.mhtmlPath,
+                            screenshotFilePath = snapshot.screenshotPath,
+                            extractedTextSummary = snapshot.extractedDomText.take(65000),
+                            aiSummary = aiResult.summary,
+                            aiTags = (aiResult.tags + listOf("v$nextVersion-Diff")).distinct(),
+                            ocrText = ocrText,
+                            captureDurationMs = durationMs,
+                            parentUuid = rootUuid,
+                            versionNumber = nextVersion,
+                            changeDiffSummary = diffSummary,
+                            aiModelUsed = aiResult.modelLabel,
+                            status = CaptureStatus.COMPLETED
+                        )
+                        dao.upsertPage(completedRevision)
+                        dao.rebuildFts()
+                        _uiAlerts.tryEmit("Generated v$nextVersion + AI Diff in $secondsFormatted")
+                    } else {
+                        dao.deletePage(pendingRevision)
+                        _uiAlerts.tryEmit("Re-pull failed for URL")
+                    }
+                } catch (e: Exception) {
                     dao.deletePage(pendingRevision)
-                    _uiAlerts.tryEmit("Re-pull failed for URL")
+                    _uiAlerts.tryEmit("Error comparing article versions")
+                } finally {
+                    _capturingUrl.value = null
+                    _isCapturing.value = false
                 }
-            } catch (e: Exception) {
-                dao.deletePage(pendingRevision)
-                _uiAlerts.tryEmit("Error comparing article versions")
-            } finally {
-                _capturingUrl.value = null
-                _isCapturing.value = false
             }
         }
     }

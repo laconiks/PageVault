@@ -16,5 +16,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PageVault"
+rootProject.name = "WebVaultr"
 include(":app")

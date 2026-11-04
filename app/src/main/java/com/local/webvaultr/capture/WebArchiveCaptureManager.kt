@@ -1,4 +1,4 @@
-package com.local.pocketarchive.capture
+package com.local.webvaultr.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -11,10 +11,9 @@ import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.local.pocketarchive.util.DiagnosticLogHelper
+import com.local.webvaultr.util.DiagnosticLogHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -22,7 +21,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.resume
@@ -50,16 +48,6 @@ class WebArchiveCaptureManager(private val context: Context) {
         private const val THUMBNAIL_HEIGHT_PX = 720
         private const val CAPTURE_TIMEOUT_MS = 60_000L
         private const val PAGE_LOAD_TIMEOUT_MS = 12_000L
-
-        private val BLOCKED_NETWORK_PATTERNS = listOf(
-            "tinypass",
-            "piano.io",
-            "zephr",
-            "pwapi.washingtonpost.com",
-            "washingtonpost.com/subscribe/",
-            "cxense",
-            "blueconic"
-        )
 
         private val DOM_STABILIZATION_JS = """
             (function() {
@@ -100,6 +88,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                         '[class*="share"]', '[class*="byline"]', '[class*="author-bio"]',
                         '[class*="video-player"]', '[class*="featured-video"]', '[class*="duet--recirculation"]',
                         '[class*="embedded-video"]', '[class*="inline-video"]',
+                        '.story-interrupt', '.ad-slot', '[class*="story-interrupt"]', '[class*="ad-slot"]',
                         'figcaption', 'figure'
                     ];
                     junkSelectors.forEach(function(sel) {
@@ -264,7 +253,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val resolvedTitle = parsed.optString("title").ifBlank { webView.title ?: targetUrl }
                     val siteName = parsed.optString("siteName").takeIf { it.isNotBlank() }
                     val author = parsed.optString("author").takeIf { it.isNotBlank() }
-                    var extractedText = parsed.optString("bodyText").ifBlank { resolvedTitle }
+                    var extractedText = PaywallBypassHelper.decodeRot1IfObfuscated(parsed.optString("bodyText").ifBlank { resolvedTitle })
 
                     // Measure true document height in physical device pixels
                     val density = context.resources.displayMetrics.density
@@ -274,9 +263,80 @@ class WebArchiveCaptureManager(private val context: Context) {
                     } else {
                         DEFAULT_VIEWPORT_HEIGHT_PX
                     }
-                    val measuredHeight = calculatedHeight.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
+                    var measuredHeight = calculatedHeight.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
 
                     DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', rawScrollHeight=$rawScrollHeight, density=$density -> measuredHeight=$measuredHeight")
+
+                    // Fallback DOM Injection: If extracted text is short (< 450 chars) or restricted,
+                    // fetch reader fallback and inject directly into live WebView DOM BEFORE MHTML & screenshot!
+                    if (extractedText.trim().length < 450 || PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText)) {
+                        DiagnosticLogHelper.log(TAG, "Short extracted DOM text (${extractedText.trim().length} chars). Fetching reader fallback text for $targetUrl")
+                        val cleanFallback = withContext(Dispatchers.IO) {
+                            PaywallBypassHelper.fetchReaderFallbackText(targetUrl)
+                        }
+                        if (!cleanFallback.isNullOrBlank() && cleanFallback.length > extractedText.length) {
+                            DiagnosticLogHelper.log(TAG, "Full fallback text retrieved (${cleanFallback.length} chars). Injecting clean paragraphs into live WebView DOM...")
+                            extractedText = PaywallBypassHelper.decodeRot1IfObfuscated(cleanFallback)
+
+                            val b64Title = Base64.encodeToString(resolvedTitle.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                            val b64Body = Base64.encodeToString(extractedText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                            val injectJs = """
+                                (function() {
+                                    try {
+                                        var existing = document.getElementById('webvaultr-hydrated-content');
+                                        if (existing) existing.remove();
+
+                                        var container = document.createElement('div');
+                                        container.id = 'webvaultr-hydrated-content';
+                                        container.style.cssText = 'padding: 24px 20px; max-width: 820px; margin: 0 auto; font-family: Georgia, -apple-system, sans-serif; font-size: 19px; line-height: 1.7; color: #111; background: #ffffff; position: relative; z-index: 99999;';
+
+                                        var titleText = decodeURIComponent(escape(window.atob('$b64Title')));
+                                        if (titleText) {
+                                            var h1 = document.createElement('h1');
+                                            h1.style.cssText = 'font-size: 28px; line-height: 1.3; margin-bottom: 20px; font-weight: bold; color: #111;';
+                                            h1.textContent = titleText;
+                                            container.appendChild(h1);
+                                        }
+
+                                        var rawBody = decodeURIComponent(escape(window.atob('$b64Body')));
+                                        var paras = rawBody.split(/\n+/);
+                                        paras.forEach(function(para) {
+                                            var t = para.trim();
+                                            if (t.length > 0) {
+                                                var p = document.createElement('p');
+                                                p.style.cssText = 'margin-bottom: 16px;';
+                                                p.textContent = t;
+                                                container.appendChild(p);
+                                            }
+                                        });
+
+                                        var articleEl = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+                                        articleEl.appendChild(container);
+
+                                        document.documentElement.style.setProperty('overflow', 'auto', 'important');
+                                        document.body.style.setProperty('overflow', 'auto', 'important');
+                                        return Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0);
+                                    } catch(e) {
+                                        return 0;
+                                    }
+                                })();
+                            """.trimIndent()
+
+                            val newScrollHeightStr = withTimeoutOrNull(3000L) {
+                                evaluateJsSuspend(webView, injectJs)
+                            }
+                            val newScrollHeight = newScrollHeightStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
+                            delay(200)
+
+                            if (newScrollHeight > 0) {
+                                val newCalculated = (newScrollHeight * density).toInt()
+                                if (newCalculated > measuredHeight) {
+                                    measuredHeight = newCalculated.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
+                                    DiagnosticLogHelper.log(TAG, "Recalculated measuredHeight after fallback DOM injection: $measuredHeight")
+                                }
+                            }
+                        }
+                    }
 
                     onStageUpdate?.invoke("Step 2/4: Locking page layout & capturing preview image...")
                     // Save MHTML archive with a 6s safety timeout from the true visual WebView
@@ -327,20 +387,6 @@ class WebArchiveCaptureManager(private val context: Context) {
                     }
 
                     DiagnosticLogHelper.log(TAG, "Screenshot and thumbnail saved successfully")
-
-                    // Check for hard paywall / CAPTCHA blocks or thin DOM text AFTER visual captures are saved.
-                    // Store Jina Reader clean text ONLY in extractedDomText (for AI Summary / Reader Mode).
-                    // NEVER mutate the WebView or overwrite visual captures with plain text!
-                    if (PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText) || extractedText.trim().length < 400) {
-                        DiagnosticLogHelper.log(TAG, "Thin text (${extractedText.trim().length} chars) or restricted page detected. Fetching clean reader text fallback for AI/Reader Mode...")
-                        val cleanReaderText = withContext(Dispatchers.IO) {
-                            PaywallBypassHelper.fetchCleanReaderText(targetUrl)
-                        }
-                        if (!cleanReaderText.isNullOrBlank() && cleanReaderText.length > extractedText.length) {
-                            DiagnosticLogHelper.log(TAG, "Clean reader text retrieved (${cleanReaderText.length} chars) for AI Edge Summary & Reader Mode")
-                            extractedText = cleanReaderText
-                        }
-                    }
 
                     val wordCount = extractedText.split(Regex("\\s+")).count { it.isNotBlank() }
 
@@ -426,18 +472,6 @@ class WebArchiveCaptureManager(private val context: Context) {
         }
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                val reqUrl = request?.url?.toString()?.lowercase() ?: return super.shouldInterceptRequest(view, request)
-                if (BLOCKED_NETWORK_PATTERNS.any { reqUrl.contains(it) }) {
-                    DiagnosticLogHelper.log(TAG, "Network blocker blocked tracking/meter script: $reqUrl")
-                    return WebResourceResponse("text/javascript", "UTF-8", ByteArrayInputStream(ByteArray(0)))
-                }
-                return super.shouldInterceptRequest(view, request)
-            }
-
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 val currentTitle = (view ?: webView).title.orEmpty()
                 if (currentTitle.contains("Just a moment", ignoreCase = true) || currentTitle.contains("Checking your browser", ignoreCase = true)) {

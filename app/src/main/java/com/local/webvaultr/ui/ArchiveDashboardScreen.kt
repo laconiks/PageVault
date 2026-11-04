@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ui
+package com.local.webvaultr.ui
 
 import android.content.Intent
 import android.net.Uri
@@ -20,11 +20,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.local.pocketarchive.data.local.ArchivedPage
-import com.local.pocketarchive.data.local.CaptureStatus
-import com.local.pocketarchive.ui.components.*
-import com.local.pocketarchive.util.AppUiPreferences
-import com.local.pocketarchive.util.ExportAndShareHelper
+import com.local.webvaultr.data.local.ArchivedPage
+import com.local.webvaultr.data.local.CaptureStatus
+import com.local.webvaultr.ui.components.*
+import com.local.webvaultr.util.AppUiPreferences
+import com.local.webvaultr.util.ExportAndShareHelper
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 

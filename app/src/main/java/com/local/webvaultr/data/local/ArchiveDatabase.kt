@@ -1,4 +1,4 @@
-package com.local.pocketarchive.data.local
+package com.local.webvaultr.data.local
 
 import android.content.Context
 import androidx.room.Database

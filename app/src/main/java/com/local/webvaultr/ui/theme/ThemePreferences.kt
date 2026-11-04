@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ui.theme
+package com.local.webvaultr.ui.theme
 
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow

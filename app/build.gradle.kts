@@ -6,15 +6,15 @@ plugins {
 }
 
 android {
-    namespace = "com.local.pocketarchive"
+    namespace = "com.local.webvaultr"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.local.pocketarchive"
+        applicationId = "com.local.webvaultr"
         minSdk = 29
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.8.2"
+        versionCode = 14
+        versionName = "0.8.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

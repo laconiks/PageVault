@@ -1,4 +1,4 @@
-package com.local.pocketarchive.util
+package com.local.webvaultr.util
 
 import android.content.Context
 import android.content.Intent
@@ -9,7 +9,7 @@ import android.graphics.Rect
 import android.graphics.pdf.PdfDocument
 import android.widget.Toast
 import androidx.core.content.FileProvider
-import com.local.pocketarchive.data.local.ArchivedPage
+import com.local.webvaultr.data.local.ArchivedPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File

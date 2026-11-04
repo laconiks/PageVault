@@ -1,12 +1,12 @@
-package com.local.pocketarchive.capture
+package com.local.webvaultr.capture
 
 import android.content.Context
 import android.util.Xml
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.local.pocketarchive.ai.LocalAiEdgeProcessor
-import com.local.pocketarchive.data.local.AppDatabase
-import com.local.pocketarchive.data.repository.ArchiveRepository
+import com.local.webvaultr.ai.LocalAiEdgeProcessor
+import com.local.webvaultr.data.local.AppDatabase
+import com.local.webvaultr.data.repository.ArchiveRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser

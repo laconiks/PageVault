@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ai
+package com.local.webvaultr.ai
 
 import android.content.Context
 import android.graphics.BitmapFactory

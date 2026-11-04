@@ -1,6 +1,5 @@
-package com.local.pocketarchive.ui
+package com.local.webvaultr.ui
 
-import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -39,8 +38,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
-import com.local.pocketarchive.data.local.ArchiveDatabase
-import com.local.pocketarchive.ui.theme.PocketArchiveTheme
+import com.local.webvaultr.data.local.ArchiveDatabase
+import com.local.webvaultr.ui.theme.PocketArchiveTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -116,7 +115,7 @@ fun OfflineViewerScreen(
                         )
                         Text(
                             text = when (viewerMode) {
-                                ViewerMode.MHTML -> "Offline MHTML Snapshot (Modals Stripped)"
+                                ViewerMode.MHTML -> "Offline MHTML Archive"
                                 ViewerMode.SCREENSHOT -> "Full-Page Vertical Screenshot (Scroll & Double-Tap Zoom)"
                                 ViewerMode.READER -> "Clean Unblocked Reader View"
                             },
@@ -239,177 +238,32 @@ fun OfflineViewerScreen(
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun OfflineMhtmlWebView(
     mhtmlPath: String,
-    onExtractedTextReady: (String) -> Unit = {}
+    @Suppress("UNUSED_PARAMETER") onExtractedTextReady: (String) -> Unit = {}
 ) {
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { context ->
             WebView(context).apply {
                 settings.apply {
-                    // Enable JS strictly for our local DOM-unmasking script while blocking all network loads
-                    javaScriptEnabled = true
+                    javaScriptEnabled = false
+                    domStorageEnabled = false
+                    loadsImagesAutomatically = true
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
                     blockNetworkLoads = true
                     allowFileAccess = true
                     allowContentAccess = true
                     builtInZoomControls = true
                     displayZoomControls = false
-                    loadWithOverviewMode = true
-                    useWideViewPort = true
                 }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(
                         view: WebView?,
                         request: WebResourceRequest?
                     ): Boolean = true
-
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        super.onPageFinished(view, url)
-                        // Strip residual subscriber modals, gates, sticky bars & unlock scroll inside loaded MHTML
-                        val cleanupJs = """
-                            (function() {
-                                // 1. Remove ONLY true subscriber/piano/regwall modal overlays
-                                var paywallSelectors = [
-                                    '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
-                                    '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
-                                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]',
-                                    // Substack modals & subscription popups
-                                    '[class*="substack-modal"]', 'div.modal-wrapper', 'div.modal-table',
-                                    '[class*="subscribe-modal"]', '[class*="paywall-banner"]',
-                                    '[class*="post-preview-overlay"]', '[class*="paywall-boundary"]',
-                                    '[class*="modal-overlay"]', '[class*="reader-popover"]',
-                                    '[class*="subscriber-only-banner"]', '[class*="subscribe-widget"]',
-                                    '[class*="pencraft"][role="dialog"]', 'div[class*="gate-container"]',
-                                    // NBC News floating video players and modals
-                                    '[class*="floating-video"]', '[class*="sticky-player"]', '[class*="mini-player"]'
-                                ];
-                                paywallSelectors.forEach(function(sel) {
-                                    document.querySelectorAll(sel).forEach(function(el) {
-                                        if (el.tagName !== 'BODY' && el.tagName !== 'HTML' && el.tagName !== 'MAIN' && el.tagName !== 'ARTICLE') {
-                                            el.remove();
-                                        }
-                                    });
-                                });
-
-                                // 2. Ensure off-canvas mobile drawers (like NBC News blue menu) and state dropdowns stay hidden
-                                var hiddenDrawers = [
-                                    '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
-                                    '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]',
-                                    'header ul', 'nav ul', '[class*="state-list"]', '[class*="navigation__list"]',
-                                    '[class*="quick-links"]', '[class*="global-nav__menu"]', '[class*="hamburger-menu"]',
-                                    '[class*="msg-drawer"]', '[class*="drawer-container"]', 'header [role="dialog"]',
-                                    '[class*="slide-out"]', '[class*="nav-panel"]'
-                                ];
-                                hiddenDrawers.forEach(function(sel) {
-                                    document.querySelectorAll(sel).forEach(function(el) {
-                                        el.style.setProperty('display', 'none', 'important');
-                                    });
-                                });
-
-                                // 3. Text-Aware Gate Removal (The Verge, WaPo, Substack, etc.)
-                                var gatePhrases = [
-                                    "continue reading",
-                                    "with a verge subscription",
-                                    "two ways to read this article",
-                                    "terms of use/your privacy rights",
-                                    "go beyond the headline",
-                                    "subscribe to the verge",
-                                    "read in the substack app",
-                                    "expand post",
-                                    "sign up to keep reading",
-                                    "subscribe to keep reading",
-                                    "get the substack app",
-                                    "read in app",
-                                    "free preview",
-                                    "this post is for paid subscribers",
-                                    "upgrade to paid",
-                                    "already a subscriber? sign in",
-                                    "let's be inbox friends",
-                                    "open in app",
-                                    "open in the substack app",
-                                    "continue in app"
-                                ];
-                                var potentialGates = document.querySelectorAll('div, section, aside, form, dialog, [role="dialog"], [role="alertdialog"]');
-                                potentialGates.forEach(function(el) {
-                                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
-                                    if (el.closest('article') && (el.innerText || '').length > 1200) return;
-                                    var text = (el.innerText || '').toLowerCase();
-                                    if (text.length > 0 && text.length < 1500) {
-                                        for (var i = 0; i < gatePhrases.length; i++) {
-                                            if (text.indexOf(gatePhrases[i]) !== -1) {
-                                                el.remove();
-                                                break;
-                                            }
-                                        }
-                                    }
-                                });
-
-                                // 3b. Auto-dismiss or click Substack expand/dismiss buttons if present
-                                document.querySelectorAll('button, a, div[role="button"]').forEach(function(btn) {
-                                    var t = (btn.innerText || '').trim().toLowerCase();
-                                    if (t === 'expand post' || t === 'expand' || t === 'continue reading' || t === 'no thanks' || t === 'read first') {
-                                        try { btn.click(); } catch(e) {}
-                                    }
-                                });
-
-                                // 4. Bottom-Anchored Sticky Bar & Backdrop Dimmer Removal
-                                document.querySelectorAll('*').forEach(function(el) {
-                                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
-                                    var style = window.getComputedStyle(el);
-                                    var pos = style.position;
-                                    if (pos === 'fixed' || pos === 'sticky') {
-                                        var rect = el.getBoundingClientRect();
-                                        if (rect.top > window.innerHeight * 0.40 && rect.height < window.innerHeight * 0.85) {
-                                            el.remove();
-                                            return;
-                                        }
-                                        var bg = style.backgroundColor;
-                                        if (bg && (bg.indexOf('rgba') !== -1 || bg.indexOf('hsla') !== -1)) {
-                                            if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
-                                                el.remove();
-                                                return;
-                                            }
-                                        }
-                                    } else {
-                                        var bg = style.backgroundColor;
-                                        if (bg && (bg.indexOf('rgba') !== -1 || bg.indexOf('hsla') !== -1)) {
-                                            var z = parseInt(style.zIndex, 10);
-                                            if (z > 100) {
-                                                var rect = el.getBoundingClientRect();
-                                                if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
-                                                    el.remove();
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-
-                                // 5. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
-                                var contentContainers = document.querySelectorAll(
-                                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"], [class*="post-content"], [class*="substack-post"], [class*="post-body"], [class*="body-markup"], [class*="single-post"], [class*="article-body__content"]'
-                                );
-                                contentContainers.forEach(function(el) {
-                                    el.style.setProperty('overflow', 'visible', 'important');
-                                    el.style.setProperty('overflow-y', 'visible', 'important');
-                                    el.style.setProperty('max-height', 'none', 'important');
-                                    el.style.setProperty('height', 'auto', 'important');
-                                    el.style.setProperty('-webkit-mask-image', 'none', 'important');
-                                    el.style.setProperty('mask-image', 'none', 'important');
-                                });
-                                document.documentElement.style.setProperty('overflow', 'auto', 'important');
-                                document.body.style.setProperty('overflow', 'auto', 'important');
-                                return document.body ? (document.body.innerText || '') : '';
-                            })();
-                        """.trimIndent()
-                        view?.evaluateJavascript(cleanupJs) { rawResult ->
-                            val unescaped = rawResult?.trim('"')?.replace("\\n", "\n") ?: ""
-                            onExtractedTextReady(unescaped)
-                        }
-                    }
                 }
                 loadUrl(Uri.fromFile(File(mhtmlPath)).toString())
             }

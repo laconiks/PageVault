@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ui.components
+package com.local.webvaultr.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable

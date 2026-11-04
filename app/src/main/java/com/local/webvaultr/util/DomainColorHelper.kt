@@ -1,8 +1,8 @@
-package com.local.pocketarchive.util
+package com.local.webvaultr.util
 
 import android.net.Uri
 import androidx.compose.ui.graphics.Color
-import com.local.pocketarchive.data.local.ArchivedPage
+import com.local.webvaultr.data.local.ArchivedPage
 import kotlin.math.abs
 
 object DomainColorHelper {

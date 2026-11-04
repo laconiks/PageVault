@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ui.components
+package com.local.webvaultr.ui.components
 
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -56,16 +56,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
-import com.local.pocketarchive.ai.AiEdgeModel
-import com.local.pocketarchive.ai.EdgeModelOption
-import com.local.pocketarchive.capture.PaywallBypassHelper
-import com.local.pocketarchive.data.local.ArchivedPage
-import com.local.pocketarchive.data.local.CaptureStatus
-import com.local.pocketarchive.data.local.RssSubscription
-import com.local.pocketarchive.ui.theme.ThemeMode
-import com.local.pocketarchive.util.AppUiPreferences
-import com.local.pocketarchive.util.DomainBrandPalette
-import com.local.pocketarchive.util.SiteCredentialManager
+import com.local.webvaultr.ai.AiEdgeModel
+import com.local.webvaultr.ai.EdgeModelOption
+import com.local.webvaultr.capture.PaywallBypassHelper
+import com.local.webvaultr.data.local.ArchivedPage
+import com.local.webvaultr.data.local.CaptureStatus
+import com.local.webvaultr.data.local.RssSubscription
+import com.local.webvaultr.ui.theme.ThemeMode
+import com.local.webvaultr.util.AppUiPreferences
+import com.local.webvaultr.util.DomainBrandPalette
+import com.local.webvaultr.util.SiteCredentialManager
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -808,7 +808,7 @@ fun VaultArticleCard(
                                         ) {
                                             TextButton(
                                                 onClick = {
-                                                    val intent = Intent(context, com.local.pocketarchive.ui.OfflineMhtmlViewerActivity::class.java).apply {
+                                                    val intent = Intent(context, com.local.webvaultr.ui.OfflineMhtmlViewerActivity::class.java).apply {
                                                         putExtra("MHTML_PATH", rev.mhtmlFilePath)
                                                         putExtra("SCREENSHOT_PATH", rev.screenshotFilePath)
                                                         putExtra("PAGE_TITLE", rev.title)
@@ -1514,7 +1514,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About WebVaultr v0.8.2", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.8.3", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,

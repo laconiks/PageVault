@@ -1,4 +1,4 @@
-package com.local.pocketarchive
+package com.local.webvaultr
 
 import android.content.Intent
 import android.os.Bundle
@@ -7,10 +7,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import com.local.pocketarchive.ui.ArchiveDashboardScreen
-import com.local.pocketarchive.ui.ArchiveViewModel
-import com.local.pocketarchive.ui.theme.PocketArchiveTheme
-import com.local.pocketarchive.util.AppUiPreferences
+import com.local.webvaultr.ui.ArchiveDashboardScreen
+import com.local.webvaultr.ui.ArchiveViewModel
+import com.local.webvaultr.ui.theme.PocketArchiveTheme
+import com.local.webvaultr.util.AppUiPreferences
 
 class MainActivity : ComponentActivity() {
 

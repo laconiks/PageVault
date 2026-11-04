@@ -1,4 +1,4 @@
-package com.local.pocketarchive.ui.theme
+package com.local.webvaultr.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
