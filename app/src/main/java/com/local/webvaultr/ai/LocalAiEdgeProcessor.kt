@@ -133,7 +133,6 @@ class LocalAiEdgeProcessor(private val context: Context) {
         val gemmaFile = findModelFile("gemma")
         val qwenFile = findModelFile("qwen")
         val llamaFile = findModelFile("llama")
-        val customFile = customPath.takeIf { it.isNotBlank() && File(it).exists() }?.let { File(it) }
 
         return listOf(
             EdgeModelOption(
@@ -152,31 +151,24 @@ class LocalAiEdgeProcessor(private val context: Context) {
             ),
             EdgeModelOption(
                 id = "llama32_3b",
-                displayName = "Llama 3.2 3B Quantized (Deep Research)",
-                recommendationBadge = "🧠 BEST FOR LONG POLICY & PRESS RELEASES",
+                displayName = "Llama 3.2 3B Instruct (Qualcomm / CPU)",
+                recommendationBadge = "DEEP CONTEXT (4K CONTEXT WINDOW)",
                 filePath = llamaFile?.absolutePath,
                 isAvailableOnDisk = llamaFile != null
             ),
             EdgeModelOption(
-                id = "custom_path",
-                displayName = "Custom Local Model File (.task / .litertlm)",
-                recommendationBadge = if (customFile != null) "Loaded: ${customFile.name}" else "Set path in AI Edge settings",
-                filePath = customFile?.absolutePath,
-                isAvailableOnDisk = customFile != null
-            ),
-            EdgeModelOption(
                 id = "extractive_deterministic",
-                displayName = "Zero-RAM Deterministic Extractive Engine",
-                recommendationBadge = "INSTANT BATTERY-SAVER (BUILT-IN)",
+                displayName = "Built-in Extractive & Diff Engine",
+                recommendationBadge = "✔ 100% OFFLINE (ZERO DOWNLOAD REQUIRED)",
                 filePath = "built_in",
                 isAvailableOnDisk = true
             )
         )
     }
 
-    suspend fun extractOcrFromScreenshot(screenshotPath: String): String = withContext(Dispatchers.IO) {
+    suspend fun extractOcrFromScreenshot(imagePath: String): String = withContext(Dispatchers.IO) {
         runCatching {
-            val file = File(screenshotPath)
+            val file = File(imagePath)
             if (!file.exists()) return@withContext ""
             val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return@withContext ""
             val image = InputImage.fromBitmap(bitmap, 0)
@@ -188,12 +180,15 @@ class LocalAiEdgeProcessor(private val context: Context) {
     suspend fun summarizeAndTag(
         title: String,
         rawText: String,
-        ocrText: String
+        ocrText: String = "",
+        publisherTags: List<String> = emptyList()
     ): AiAnalysisResult = withContext(Dispatchers.Default) {
         val combined = "$title. $rawText$ocrText".trim()
         val selectedId = getSelectedModelId()
         val models = getAvailableEdgeModels()
         val chosenOption = models.find { it.id == selectedId } ?: models.first()
+
+        val resolvedTags = resolveFinalTags(publisherTags, combined)
 
         if (selectedId != "extractive_deterministic" && chosenOption.filePath != null && chosenOption.filePath != "built_in") {
             val llmResult = runCatching {
@@ -208,10 +203,9 @@ class LocalAiEdgeProcessor(private val context: Context) {
             }.getOrNull()
 
             if (!llmResult.isNullOrBlank()) {
-                val tags = extractTopKeywords(combined)
                 return@withContext AiAnalysisResult(
                     summary = llmResult.trim(),
-                    tags = tags,
+                    tags = resolvedTags,
                     modelLabel = chosenOption.displayName.substringBefore(" (")
                 )
             }
@@ -256,9 +250,23 @@ class LocalAiEdgeProcessor(private val context: Context) {
 
         AiAnalysisResult(
             summary = fallbackSummary.take(500),
-            tags = extractTopKeywords(combined),
+            tags = resolvedTags,
             modelLabel = activeLabel
         )
+    }
+
+    private fun resolveFinalTags(publisherTags: List<String>, text: String): List<String> {
+        val cleanPub = publisherTags
+            .map { it.trim().split(Regex("\\s+")).joinToString(" ") { w -> w.replaceFirstChar { c -> c.uppercase() } } }
+            .filter { it.isNotBlank() && it.length in 2..32 }
+            .distinct()
+            .take(5)
+
+        return if (cleanPub.size >= 3) {
+            cleanPub
+        } else {
+            (cleanPub + extractTopKeywords(text)).distinct().take(4)
+        }
     }
 
     suspend fun compareArticleVersions(
@@ -299,10 +307,11 @@ class LocalAiEdgeProcessor(private val context: Context) {
         title: String,
         extractedDomText: String,
         screenshotFile: File,
-        preferredModel: AiEdgeModel = currentModel
+        preferredModel: AiEdgeModel = currentModel,
+        publisherTags: List<String> = emptyList()
     ): AiEnrichmentResult = withContext(Dispatchers.Default) {
         val ocrText = extractOcrFromScreenshot(screenshotFile.absolutePath)
-        val analysis = summarizeAndTag(title, extractedDomText, ocrText)
+        val analysis = summarizeAndTag(title, extractedDomText, ocrText, publisherTags)
         AiEnrichmentResult(
             summary = analysis.summary,
             tags = analysis.tags,
@@ -343,17 +352,38 @@ class LocalAiEdgeProcessor(private val context: Context) {
     private fun extractTopKeywords(text: String): List<String> {
         val stopWords = setOf(
             "the", "and", "for", "that", "this", "with", "from", "your", "have", "more",
-            "will", "about", "https", "http", "www", "com", "page", "article", "news", "said"
+            "will", "about", "https", "http", "www", "com", "page", "article", "news", "said",
+            "also", "been", "were", "they", "their", "which", "would", "what", "there", "when",
+            "after", "could", "first", "into", "other", "than", "some", "them", "then", "like",
+            "over", "only", "even", "most", "made", "many", "such", "where", "just", "being",
+            "these", "those", "because", "while", "before", "between", "both", "through"
         )
-        return text.lowercase()
+
+        val properEntities = Regex("\\b[A-Z][a-z]{3,}(?:\\s+[A-Z][a-z]{3,})?\\b")
+            .findAll(text)
+            .map { it.value.trim() }
+            .filter { it.lowercase() !in stopWords && !it.contains(Regex("^(The|This|That|With|From|They|There|When|After|What|While|Where)\\b")) }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .filter { it.value >= 2 }
+            .sortedByDescending { it.value }
+            .map { it.key }
+            .take(4)
+
+        if (properEntities.size >= 3) return properEntities
+
+        val singleWords = text.lowercase()
             .replace(Regex("[^a-z0-9\\s]"), " ")
             .split(Regex("\\s+"))
-            .filter { it.length in 5..14 && it !in stopWords }
+            .filter { it.length in 5..16 && it !in stopWords }
             .groupingBy { it }
             .eachCount()
             .entries
             .sortedByDescending { it.value }
-            .take(4)
             .map { it.key.replaceFirstChar { c -> c.uppercase() } }
+            .take(4)
+
+        return (properEntities + singleWords).distinct().take(4)
     }
 }

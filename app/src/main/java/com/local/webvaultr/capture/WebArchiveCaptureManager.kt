@@ -35,7 +35,8 @@ data class RawCaptureResult(
     val wordCount: Int,
     val mhtmlFile: File,
     val fullScreenshotFile: File,
-    val thumbnailFile: File
+    val thumbnailFile: File,
+    val keywords: List<String> = emptyList()
 )
 
 class WebArchiveCaptureManager(private val context: Context) {
@@ -68,6 +69,39 @@ class WebArchiveCaptureManager(private val context: Context) {
                         ? rawTitle
                         : ((metaOgTitle && metaOgTitle.content) || (h1Title && (h1Title.innerText || h1Title.textContent)) || rawTitle);
 
+                    // Extract publisher meta keywords and JSON-LD keywords
+                    var metaKeywords = [];
+                    document.querySelectorAll('meta[property="article:tag"], meta[name="keywords"], meta[name="news_keywords"]').forEach(function(m) {
+                        var c = m.getAttribute('content');
+                        if (c) {
+                            c.split(',').forEach(function(k) {
+                                var trimmed = k.trim();
+                                if (trimmed.length > 1 && trimmed.length < 35 && metaKeywords.indexOf(trimmed) === -1) {
+                                    metaKeywords.push(trimmed);
+                                }
+                            });
+                        }
+                    });
+                    try {
+                        document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s) {
+                            var d = JSON.parse(s.textContent || '{}');
+                            var items = Array.isArray(d) ? d : (d['@graph'] ? d['@graph'] : [d]);
+                            items.forEach(function(item) {
+                                if (item && item.keywords) {
+                                    var kwList = Array.isArray(item.keywords) ? item.keywords : item.keywords.split(',');
+                                    kwList.forEach(function(k) {
+                                        if (typeof k === 'string') {
+                                            var trimmed = k.trim();
+                                            if (trimmed.length > 1 && trimmed.length < 35 && metaKeywords.indexOf(trimmed) === -1) {
+                                                metaKeywords.push(trimmed);
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                    } catch(e) {}
+
                     var root = document.querySelector('article') ||
                                document.querySelector('[role="main"]') ||
                                document.querySelector('[class*="article-body__content"]') ||
@@ -95,7 +129,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                         clone.querySelectorAll(sel).forEach(function(el) { el.remove(); });
                     });
 
-                    // 2. Noise phrases injected inline by publishers (Verge, WaPo, etc.)
+                    // 2. Noise phrases injected inline by publishers
                     var noiseLinePatterns = [
                         /^skip to main content/i,
                         /^the homepage$/i,
@@ -120,7 +154,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                         return false;
                     }
 
-                    // 3. Walk only semantic text blocks and preserve Markdown structure (\n\n and > blockquotes)
+                    // 3. Walk only semantic text blocks and preserve Markdown structure
                     var blocks = clone.querySelectorAll('p, h2, h3, blockquote');
                     var paragraphs = [];
                     var seen = {};
@@ -160,7 +194,8 @@ class WebArchiveCaptureManager(private val context: Context) {
                         siteName: metaSite ? metaSite.content : '',
                         author: metaAuthor ? metaAuthor.content : '',
                         scrollHeight: Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0),
-                        bodyText: articleMarkdown.substring(0, 75000)
+                        bodyText: articleMarkdown.substring(0, 75000),
+                        keywords: metaKeywords.slice(0, 10)
                     });
                     return btoa(unescape(encodeURIComponent(payload)));
                 } catch (e) {
@@ -207,7 +242,6 @@ class WebArchiveCaptureManager(private val context: Context) {
                 )
 
                 try {
-                    // 12-second DOM-hydration fallback: ad scripts/trackers never hang capture
                     DiagnosticLogHelper.log(TAG, "Awaiting page readiness (max ${PAGE_LOAD_TIMEOUT_MS / 1000}s)...")
                     val loadSuccess = withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MS) {
                         awaitPageLoaded(webView, targetUrl, spoofCrawler)
@@ -255,6 +289,16 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val author = parsed.optString("author").takeIf { it.isNotBlank() }
                     var extractedText = PaywallBypassHelper.decodeRot1IfObfuscated(parsed.optString("bodyText").ifBlank { resolvedTitle })
 
+                    val keywordsArr = parsed.optJSONArray("keywords")
+                    val extractedKeywords = buildList {
+                        if (keywordsArr != null) {
+                            for (i in 0 until keywordsArr.length()) {
+                                val k = keywordsArr.optString(i).trim()
+                                if (k.isNotBlank() && !contains(k)) add(k)
+                            }
+                        }
+                    }
+
                     // Measure true document height in physical device pixels
                     val density = context.resources.displayMetrics.density
                     val rawScrollHeight = parsed.optInt("scrollHeight", 0)
@@ -265,80 +309,45 @@ class WebArchiveCaptureManager(private val context: Context) {
                     }
                     var measuredHeight = calculatedHeight.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
 
-                    DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', rawScrollHeight=$rawScrollHeight, density=$density -> measuredHeight=$measuredHeight")
+                    DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', rawScrollHeight=$rawScrollHeight, density=$density -> measuredHeight=$measuredHeight, keywords=${extractedKeywords.size}")
 
-                    // Fallback DOM Injection: If extracted text is short (< 450 chars) or restricted,
-                    // fetch reader fallback and inject directly into live WebView DOM BEFORE MHTML & screenshot!
-                    if (extractedText.trim().length < 450 || PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText)) {
+                    // Fallback DOM Injection: If extracted text is short (< 500 chars) or restricted,
+                    // fetch reader fallback and replace WebView body with clean reader view BEFORE MHTML & screenshot!
+                    if (extractedText.trim().length < 500 || PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText)) {
                         DiagnosticLogHelper.log(TAG, "Short extracted DOM text (${extractedText.trim().length} chars). Fetching reader fallback text for $targetUrl")
                         val cleanFallback = withContext(Dispatchers.IO) {
                             PaywallBypassHelper.fetchReaderFallbackText(targetUrl)
                         }
                         if (!cleanFallback.isNullOrBlank() && cleanFallback.length > extractedText.length) {
-                            DiagnosticLogHelper.log(TAG, "Full fallback text retrieved (${cleanFallback.length} chars). Injecting clean paragraphs into live WebView DOM...")
+                            DiagnosticLogHelper.log(TAG, "Full fallback text retrieved (${cleanFallback.length} chars). Injecting clean reader view into live WebView DOM...")
                             extractedText = PaywallBypassHelper.decodeRot1IfObfuscated(cleanFallback)
+                            PaywallBypassHelper.injectCleanReaderFallbackIntoWebView(webView, extractedText, resolvedTitle)
+                            delay(250)
 
-                            val b64Title = Base64.encodeToString(resolvedTitle.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                            val b64Body = Base64.encodeToString(extractedText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                            val injectJs = """
-                                (function() {
-                                    try {
-                                        var existing = document.getElementById('webvaultr-hydrated-content');
-                                        if (existing) existing.remove();
-
-                                        var container = document.createElement('div');
-                                        container.id = 'webvaultr-hydrated-content';
-                                        container.style.cssText = 'padding: 24px 20px; max-width: 820px; margin: 0 auto; font-family: Georgia, -apple-system, sans-serif; font-size: 19px; line-height: 1.7; color: #111; background: #ffffff; position: relative; z-index: 99999;';
-
-                                        var titleText = decodeURIComponent(escape(window.atob('$b64Title')));
-                                        if (titleText) {
-                                            var h1 = document.createElement('h1');
-                                            h1.style.cssText = 'font-size: 28px; line-height: 1.3; margin-bottom: 20px; font-weight: bold; color: #111;';
-                                            h1.textContent = titleText;
-                                            container.appendChild(h1);
-                                        }
-
-                                        var rawBody = decodeURIComponent(escape(window.atob('$b64Body')));
-                                        var paras = rawBody.split(/\n+/);
-                                        paras.forEach(function(para) {
-                                            var t = para.trim();
-                                            if (t.length > 0) {
-                                                var p = document.createElement('p');
-                                                p.style.cssText = 'margin-bottom: 16px;';
-                                                p.textContent = t;
-                                                container.appendChild(p);
-                                            }
-                                        });
-
-                                        var articleEl = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
-                                        articleEl.appendChild(container);
-
-                                        document.documentElement.style.setProperty('overflow', 'auto', 'important');
-                                        document.body.style.setProperty('overflow', 'auto', 'important');
-                                        return Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0);
-                                    } catch(e) {
-                                        return 0;
-                                    }
-                                })();
-                            """.trimIndent()
-
-                            val newScrollHeightStr = withTimeoutOrNull(3000L) {
-                                evaluateJsSuspend(webView, injectJs)
+                            val newScrollHeightStr = withTimeoutOrNull(2000L) {
+                                evaluateJsSuspend(webView, "Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)")
                             }
                             val newScrollHeight = newScrollHeightStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
-                            delay(200)
-
                             if (newScrollHeight > 0) {
                                 val newCalculated = (newScrollHeight * density).toInt()
                                 if (newCalculated > measuredHeight) {
                                     measuredHeight = newCalculated.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
-                                    DiagnosticLogHelper.log(TAG, "Recalculated measuredHeight after fallback DOM injection: $measuredHeight")
+                                    DiagnosticLogHelper.log(TAG, "Recalculated measuredHeight after fallback injection: $measuredHeight")
                                 }
                             }
                         }
                     }
 
                     onStageUpdate?.invoke("Step 2/4: Locking page layout & capturing preview image...")
+                    // Freeze DOM before saving MHTML
+                    withTimeoutOrNull(1000L) {
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            PaywallBypassHelper.freezeDomBeforeMhtmlSave(webView) {
+                                if (cont.isActive) cont.resume(Unit)
+                            }
+                        }
+                    }
+
                     // Save MHTML archive with a 6s safety timeout from the true visual WebView
                     DiagnosticLogHelper.log(TAG, "Saving MHTML web archive...")
                     withTimeoutOrNull(6_000L) {
@@ -351,7 +360,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                         DiagnosticLogHelper.log(TAG, "MHTML archive saved successfully (${mhtmlFile.length()} bytes)")
                     }
 
-                    // ALWAYS capture screenshot + thumbnail from true visual WebView
+                    // Capture screenshot + thumbnail from true visual WebView
                     DiagnosticLogHelper.log(TAG, "Capturing WebView screenshot ($VIEWPORT_WIDTH_PX x $measuredHeight)...")
                     val finalHeightSpec = View.MeasureSpec.makeMeasureSpec(measuredHeight, View.MeasureSpec.EXACTLY)
                     webView.measure(widthSpec, finalHeightSpec)
@@ -399,7 +408,8 @@ class WebArchiveCaptureManager(private val context: Context) {
                         wordCount = wordCount,
                         mhtmlFile = mhtmlFile,
                         fullScreenshotFile = fullScreenshotFile,
-                        thumbnailFile = thumbnailFile
+                        thumbnailFile = thumbnailFile,
+                        keywords = extractedKeywords
                     )
                 } catch (t: Throwable) {
                     DiagnosticLogHelper.log(TAG, "Capture encounter exception: ${t.localizedMessage}. Performing fallback.")
@@ -429,7 +439,8 @@ class WebArchiveCaptureManager(private val context: Context) {
                         wordCount = 1,
                         mhtmlFile = mhtmlFile,
                         fullScreenshotFile = fullScreenshotFile,
-                        thumbnailFile = thumbnailFile
+                        thumbnailFile = thumbnailFile,
+                        keywords = emptyList()
                     )
                 } finally {
                     webView.stopLoading()
@@ -472,6 +483,11 @@ class WebArchiveCaptureManager(private val context: Context) {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, startedUrl: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, startedUrl, favicon)
+                PaywallBypassHelper.injectStealthAntiDetection(view ?: webView)
+            }
+
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 val currentTitle = (view ?: webView).title.orEmpty()
                 if (currentTitle.contains("Just a moment", ignoreCase = true) || currentTitle.contains("Checking your browser", ignoreCase = true)) {

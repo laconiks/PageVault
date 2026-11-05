@@ -1,9 +1,13 @@
 package com.local.webvaultr.capture
 
+import android.content.Context
+import android.webkit.CookieManager
+import android.webkit.WebSettings
 import android.webkit.WebView
 import com.local.webvaultr.util.DiagnosticLogHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -42,6 +46,34 @@ object PaywallBypassHelper {
     )
 
     /**
+     * Resolves the device's real native Chrome Mobile User-Agent with WebView markers ('; wv' and 'Version/X.X')
+     * stripped, matching an authentic Pixel browser for TLS and bot detection bypass (NYT, Bizjournals, NBC).
+     */
+    fun getAuthenticChromeUserAgent(context: Context): String {
+        val defaultUa = runCatching { WebSettings.getDefaultUserAgent(context) }.getOrNull()
+        return if (!defaultUa.isNullOrBlank()) {
+            defaultUa.replace("; wv", "").replace(Regex("Version/\\d+\\.\\d+\\s*"), "")
+        } else {
+            CHROME_MOBILE_USER_AGENT
+        }
+    }
+
+    /**
+     * Injects stealth anti-bot bypass properties at onPageStarted (navigator.webdriver = false, window.chrome).
+     */
+    fun injectStealthAntiDetection(webView: WebView) {
+        val js = """
+            (function() {
+                try {
+                    Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
+                    window.chrome = window.chrome || { runtime: {} };
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    /**
      * Determines if extracted DOM text represents a hard paywall, subscription barrier, or CAPTCHA blocking screen.
      */
     fun isPaywallOrCaptchaBlocked(text: String): Boolean {
@@ -73,7 +105,7 @@ object PaywallBypassHelper {
             val responseCode = connection.responseCode
             if (responseCode == HttpURLConnection.HTTP_OK) {
                 val body = connection.inputStream.bufferedReader().use { it.readText() }
-                if (body.length > 500) {
+                if (body.length > 400) {
                     DiagnosticLogHelper.log(TAG, "Successfully fetched clean reader text (${body.length} chars)")
                     body
                 } else {
@@ -97,7 +129,7 @@ object PaywallBypassHelper {
 
     /**
      * Unscrambles NY Daily News / Tribune Publishing ROT-1 Caesar cipher text ("uif gjfme" -> "the field")
-     * even when paragraph 1 is plain English and paragraph 2 switches to ROT-1 mid-sentence.
+     * in Kotlin once, avoiding duplicate double-shifts.
      */
     fun decodeRot1IfObfuscated(input: String): String {
         if (input.isBlank()) return input
@@ -124,7 +156,6 @@ object PaywallBypassHelper {
             }
         }
 
-        // Split by sentence/line boundaries so mixed paragraphs (like NYDN Paragraph 2) are decoded accurately
         return input.lines().joinToString("\n") { line ->
             val words = Regex("[a-zA-Z]+").findAll(line).map { it.value.lowercase() }.toList()
             val rotCount = words.count { it in rot1Markers }
@@ -133,11 +164,8 @@ object PaywallBypassHelper {
             } else {
                 val plainCount = words.count { it in plainMarkers }
                 if (plainCount == 0 || rotCount > plainCount * 2) {
-                    // Entire line is ROT-1
                     shiftRot1(line)
                 } else {
-                    // Mixed line (e.g. "Robinson, nearly blind from diabetes, was standing on uif gjfme. Qmbzfst...")
-                    // Find the first ROT-1 marker word and decode from there to the end of the line
                     val firstRotMatch = Regex("\\b(uif|boe|xbt|gspn|pwfs|Qmbzfst|Spcjotpo|Npshbo|boopvodfnfou)\\b", RegexOption.IGNORE_CASE)
                         .find(line)
                     if (firstRotMatch != null) {
@@ -152,24 +180,70 @@ object PaywallBypassHelper {
     }
 
     /**
+     * Injects clean formatted reader HTML into the WebView body when extracted DOM text is paywalled or blank (< 500 chars),
+     * so both the MHTML archive and full-height screenshot display the complete formatted article.
+     */
+    fun injectCleanReaderFallbackIntoWebView(webView: WebView, cleanText: String, title: String) {
+        val escapedTitle = JSONObject.quote(title)
+        val escapedBody = JSONObject.quote(cleanText)
+        val js = """
+            (function() {
+                try {
+                    var t = $escapedTitle;
+                    var b = $escapedBody;
+                    var paras = b.split(/\n+/).map(function(p) { return p.trim(); }).filter(function(p) { return p.length > 0; });
+                    var html = '<div style="max-width: 720px; margin: 0 auto; padding: 24px 16px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Georgia, serif; line-height: 1.65; color: #111; background: #fff;">';
+                    if (t) html += '<h1 style="font-size: 26px; line-height: 1.25; margin-bottom: 20px; font-weight: 700;">' + t + '</h1>';
+                    paras.forEach(function(p) {
+                        html += '<p style="font-size: 17px; margin-bottom: 16px;">' + p + '</p>';
+                    });
+                    html += '</div>';
+                    document.body.innerHTML = html;
+                    document.body.style.background = '#ffffff';
+                    document.documentElement.style.background = '#ffffff';
+                    window.scrollTo(0, 0);
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    /**
+     * Freezes CSS animations and stabilizes the DOM before saving MHTML.
+     */
+    fun freezeDomBeforeMhtmlSave(webView: WebView, onComplete: () -> Unit) {
+        val js = """
+            (function() {
+                try {
+                    var s = document.createElement('style');
+                    s.textContent = '* { animation: none !important; transition: none !important; }';
+                    (document.head || document.documentElement).appendChild(s);
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js) {
+            webView.postDelayed({ onComplete() }, 100L)
+        }
+    }
+
+    /**
      * Configures WebView settings prior to loadUrl().
-     * Uses standard Chrome Mobile User-Agent with Google Referer header to bypass bot blocks.
-     * @param spoofCrawler If true, sets standard headers with Google Referer.
-     * @param disableJs If true, disables JavaScript to stop client-side paywall truncation scripts.
+     * Uses device native authentic Chrome Mobile User-Agent with Google Referer header to bypass bot blocks.
      */
     fun configureWebViewForCapture(
         webView: WebView,
         spoofCrawler: Boolean = true,
         disableJs: Boolean = false
     ) {
-        DiagnosticLogHelper.log(TAG, "Configuring WebView settings (jsEnabled=${!disableJs}, spoofCrawler=$spoofCrawler, UA=ChromeMobile)")
+        val ua = getAuthenticChromeUserAgent(webView.context)
+        DiagnosticLogHelper.log(TAG, "Configuring WebView settings (jsEnabled=${!disableJs}, spoofCrawler=$spoofCrawler, UA=$ua)")
         webView.settings.apply {
             javaScriptEnabled = !disableJs
             domStorageEnabled = true
-            userAgentString = CHROME_MOBILE_USER_AGENT
+            userAgentString = ua
         }
         runCatching {
-            android.webkit.CookieManager.getInstance().apply {
+            CookieManager.getInstance().apply {
                 setAcceptCookie(true)
                 setAcceptThirdPartyCookies(webView, true)
             }
@@ -178,6 +252,7 @@ object PaywallBypassHelper {
 
     /**
      * Injects surgical DOM unmasking, text-aware gate removal, sticky bar removal,
+     * horizontal width constraints (fixing CNN clipping), auto-clicking AP News/Substack buttons,
      * and Next.js (__NEXT_DATA__) + JSON-LD articleBody recovery script before MHTML/PDF capture.
      */
     fun unlockAndSanitizeDom(webView: WebView, onComplete: () -> Unit) {
@@ -188,6 +263,13 @@ object PaywallBypassHelper {
 
         val unlockScript = """
             (function() {
+                // 0. Constrain horizontal width so CNN and wide layouts never clip in PDF / full-page screenshots
+                try {
+                    var widthStyle = document.createElement('style');
+                    widthStyle.textContent = 'html, body { max-width: 100vw !important; overflow-x: hidden !important; }';
+                    (document.head || document.documentElement).appendChild(widthStyle);
+                } catch(we) {}
+
                 // 1. Remove ONLY true subscriber/piano/regwall modal overlays (never touch nav or article containers)
                 var paywallSelectors = [
                     '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
@@ -211,13 +293,15 @@ object PaywallBypassHelper {
                     });
                 });
 
-                // 1b. Politico & general mid-article ad-slot, interrupt, and advertisement cleanup
+                // 1b. Politico & general mid-article ad-slot, interrupt, spinner, and advertisement cleanup
                 var adSelectors = [
                     '.story-interrupt', '.ad-slot', '[class*="story-interrupt"]', '[class*="ad-slot"]',
                     '[id*="story-interrupt"]', '[id*="ad-slot"]', '[data-ad-slot]', '[class*="story-ad"]',
                     '[class*="ad-container"]', '[class*="ad_container"]', '[class*="ad-wrapper"]',
                     '[data-ad-type]', '[class*="ad--slot"]', '[class*="advertisement-slot"]',
-                    'aside.ad', 'div.ad', 'div[id*="google_ads"]', 'div[id*="dfp-ad"]'
+                    'aside.ad', 'div.ad', 'div[id*="google_ads"]', 'div[id*="dfp-ad"]',
+                    '[class*="spinner"]', '[class*="loader"]', '[id*="spinner"]', '[id*="loader"]',
+                    '[class*="interstitial"]', '[id*="interstitial"]'
                 ];
                 adSelectors.forEach(function(sel) {
                     document.querySelectorAll(sel).forEach(function(el) {
@@ -290,10 +374,10 @@ object PaywallBypassHelper {
                     }
                 });
 
-                // 3b. Auto-dismiss or click Substack expand/dismiss buttons if present
+                // 3b. Auto-dismiss or click AP News / Substack expand/dismiss buttons
                 document.querySelectorAll('button, a, div[role="button"]').forEach(function(btn) {
                     var t = (btn.innerText || '').trim().toLowerCase();
-                    if (t === 'expand post' || t === 'expand' || t === 'continue reading' || t === 'no thanks' || t === 'read first') {
+                    if (t === 'expand post' || t === 'expand' || t === 'continue reading' || t === 'read more' || t === 'view more' || t === 'no thanks' || t === 'read first' || t === 'close x' || t === 'close') {
                         try { btn.click(); } catch(e) {}
                     }
                 });
@@ -346,180 +430,125 @@ object PaywallBypassHelper {
                 });
 
                 // 6. Boston Globe / WaPo Arc XP Fusion, NBC News (__NEXT_DATA__) & JSON-LD Hydration
+                // ONLY inject if visible article text is short (< 650 chars), stopping Politico duplication
                 try {
-                    var recoveredParas = [];
+                    var articleEl = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+                    var visibleLen = (articleEl ? (articleEl.innerText || '') : '').trim().length;
 
-                    // 6a. Arc XP Fusion (Boston Globe, Washington Post, etc.)
-                    try {
-                        var fusionObj = null;
-                        if (window.Fusion && window.Fusion.globalContent) {
-                            fusionObj = window.Fusion.globalContent;
-                        } else {
-                            var fusionScript = document.getElementById('fusion-metadata') || document.querySelector('script[id*="fusion"]');
-                            if (fusionScript && fusionScript.textContent) {
-                                var fMatch = fusionScript.textContent.match(/Fusion\.globalContent\s*=\s*(\{.*?\});/);
-                                if (fMatch) fusionObj = JSON.parse(fMatch[1]);
-                            }
-                        }
-                        if (fusionObj) {
-                            function extractFusion(obj) {
-                                if (!obj || typeof obj !== 'object') return;
-                                if (Array.isArray(obj.content_elements)) {
-                                    obj.content_elements.forEach(function(item) {
-                                        if (!item) return;
-                                        var raw = item.content || item.text || '';
-                                        if (typeof raw === 'string' && raw.trim().length > 0) {
-                                            var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                            if (clean.length > 0) recoveredParas.push(clean);
-                                        }
-                                    });
-                                }
-                                for (var fk in obj) {
-                                    if (obj.hasOwnProperty(fk) && typeof obj[fk] === 'object' && fk !== 'content_elements') {
-                                        extractFusion(obj[fk]);
-                                    }
-                                }
-                            }
-                            extractFusion(fusionObj);
-                        }
-                    } catch(fe) {}
+                    if (visibleLen < 650) {
+                        var recoveredParas = [];
 
-                    // 6b. Next.js (__NEXT_DATA__)
-                    var nextDataEl = document.getElementById('__NEXT_DATA__');
-                    if (nextDataEl && nextDataEl.textContent) {
+                        // 6a. Arc XP Fusion (Boston Globe, Washington Post, etc.)
                         try {
-                            var nextData = JSON.parse(nextDataEl.textContent);
-                            function findContentElements(obj) {
-                                if (!obj || typeof obj !== 'object') return;
-                                if (Array.isArray(obj)) {
-                                    for (var i = 0; i < obj.length; i++) findContentElements(obj[i]);
-                                } else {
+                            var fusionObj = null;
+                            if (window.Fusion && window.Fusion.globalContent) {
+                                fusionObj = window.Fusion.globalContent;
+                            } else {
+                                var fusionScript = document.getElementById('fusion-metadata') || document.querySelector('script[id*="fusion"]');
+                                if (fusionScript && fusionScript.textContent) {
+                                    var fMatch = fusionScript.textContent.match(/Fusion\.globalContent\s*=\\s*(\{.*?\}\);/);
+                                    if (fMatch) fusionObj = JSON.parse(fMatch[1]);
+                                }
+                            }
+                            if (fusionObj) {
+                                function extractFusion(obj) {
+                                    if (!obj || typeof obj !== 'object') return;
                                     if (Array.isArray(obj.content_elements)) {
                                         obj.content_elements.forEach(function(item) {
-                                            var raw = (item && (item.content || item.text)) || '';
+                                            if (!item) return;
+                                            var raw = item.content || item.text || '';
                                             if (typeof raw === 'string' && raw.trim().length > 0) {
                                                 var clean = raw.replace(/<[^>]*>/g, '').trim();
                                                 if (clean.length > 0) recoveredParas.push(clean);
                                             }
                                         });
                                     }
-                                    if (Array.isArray(obj.body)) {
-                                        obj.body.forEach(function(item) {
-                                            var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
-                                            if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                                if (clean.length > 0) recoveredParas.push(clean);
-                                            }
-                                        });
-                                    }
-                                    for (var k in obj) {
-                                        if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
-                                            findContentElements(obj[k]);
+                                    for (var fk in obj) {
+                                        if (obj.hasOwnProperty(fk) && typeof obj[fk] === 'object' && fk !== 'content_elements') {
+                                            extractFusion(obj[fk]);
                                         }
                                     }
                                 }
+                                extractFusion(fusionObj);
                             }
-                            findContentElements(nextData);
-                        } catch (ne) {}
-                    }
+                        } catch(fe) {}
 
-                    // 6c. JSON-LD articleBody
-                    var longestLdBody = '';
-                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                    scripts.forEach(function(s) {
-                        try {
-                            var data = JSON.parse(s.textContent || '{}');
-                            var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
-                            items.forEach(function(item) {
-                                if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestLdBody.length) {
-                                    longestLdBody = item.articleBody;
+                        // 6b. Next.js (__NEXT_DATA__)
+                        var nextDataEl = document.getElementById('__NEXT_DATA__');
+                        if (nextDataEl && nextDataEl.textContent) {
+                            try {
+                                var nextData = JSON.parse(nextDataEl.textContent);
+                                function findContentElements(obj) {
+                                    if (!obj || typeof obj !== 'object') return;
+                                    if (Array.isArray(obj)) {
+                                        for (var i = 0; i < obj.length; i++) findContentElements(obj[i]);
+                                    } else {
+                                        if (Array.isArray(obj.content_elements)) {
+                                            obj.content_elements.forEach(function(item) {
+                                                var raw = (item && (item.content || item.text)) || '';
+                                                if (typeof raw === 'string' && raw.trim().length > 0) {
+                                                    var clean = raw.replace(/<[^>]*>/g, '').trim();
+                                                    if (clean.length > 0) recoveredParas.push(clean);
+                                                }
+                                            });
+                                        }
+                                        if (Array.isArray(obj.body)) {
+                                            obj.body.forEach(function(item) {
+                                                var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
+                                                if (typeof raw === 'string' && raw.trim().length > 0) {
+                                                    var clean = raw.replace(/<[^>]*>/g, '').trim();
+                                                    if (clean.length > 0) recoveredParas.push(clean);
+                                                }
+                                            });
+                                        }
+                                        for (var k in obj) {
+                                            if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
+                                                findContentElements(obj[k]);
+                                            }
+                                        }
+                                    }
                                 }
-                            });
-                        } catch (je) {}
-                    });
+                                findContentElements(nextData);
+                            } catch (ne) {}
+                        }
 
-                    var articleEl = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
-                    var visibleLen = (articleEl.innerText || '').trim().length;
-                    var recoveredText = recoveredParas.join('\n\n').trim();
-
-                    var candidateParas = [];
-                    if (recoveredText.length >= visibleLen + 300 && recoveredParas.length > 0) {
-                        candidateParas = recoveredParas;
-                    } else if (longestLdBody.length >= visibleLen + 300) {
-                        candidateParas = longestLdBody.split(/\n+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
-                    }
-
-                    if (candidateParas.length > 0 && !document.getElementById('webvaultr-hydrated-content') && !document.getElementById('pagevault-hydrated-content')) {
-                        var container = document.createElement('div');
-                        container.id = 'webvaultr-hydrated-content';
-                        container.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
-                        candidateParas.forEach(function(para) {
-                            var p = document.createElement('p');
-                            p.style.cssText = 'margin-bottom: 14px;';
-                            p.textContent = para;
-                            container.appendChild(p);
+                        // 6c. JSON-LD articleBody
+                        var longestLdBody = '';
+                        var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                        scripts.forEach(function(s) {
+                            try {
+                                var data = JSON.parse(s.textContent || '{}');
+                                var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
+                                items.forEach(function(item) {
+                                    if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestLdBody.length) {
+                                        longestLdBody = item.articleBody;
+                                    }
+                                });
+                            } catch (je) {}
                         });
-                        articleEl.appendChild(container);
+
+                        var recoveredText = recoveredParas.join('\n\n').trim();
+                        var candidateParas = [];
+                        if (recoveredText.length >= visibleLen + 300 && recoveredParas.length > 0) {
+                            candidateParas = recoveredParas;
+                        } else if (longestLdBody.length >= visibleLen + 300) {
+                            candidateParas = longestLdBody.split(/\n+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+                        }
+
+                        if (candidateParas.length > 0 && !document.getElementById('webvaultr-hydrated-content')) {
+                            var container = document.createElement('div');
+                            container.id = 'webvaultr-hydrated-content';
+                            container.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
+                            candidateParas.forEach(function(para) {
+                                var p = document.createElement('p');
+                                p.style.cssText = 'margin-bottom: 14px;';
+                                p.textContent = para;
+                                container.appendChild(p);
+                            });
+                            articleEl.appendChild(container);
+                        }
                     }
                 } catch (e) {}
-
-                // 7. NY Daily News / Tribune ROT-1 In-DOM Unscrambler
-                try {
-                    var rot1Markers = ['uif', 'boe', 'xbt', 'gspn', 'pwfs', 'up', 'jo', 'gps', 'xjui', 'tbje'];
-                    function shiftRot1Char(c) {
-                        var code = c.charCodeAt(0);
-                        if (code >= 98 && code <= 122) return String.fromCharCode(code - 1);
-                        if (code === 97) return 'z';
-                        if (code >= 66 && code <= 90) return String.fromCharCode(code - 1);
-                        if (code === 65) return 'Z';
-                        return c;
-                    }
-                    function shiftRot1Str(str) {
-                        var res = '';
-                        for (var i = 0; i < str.length; i++) res += shiftRot1Char(str[i]);
-                        return res;
-                    }
-                    function decodeRot1IfMatched(text) {
-                        if (!text || text.length < 20) return text;
-                        var words = text.toLowerCase().match(/[a-z]+/g) || [];
-                        var rotMatches = 0;
-                        for (var i = 0; i < words.length; i++) {
-                            if (rot1Markers.indexOf(words[i]) !== -1) rotMatches++;
-                        }
-                        if (rotMatches >= 2) {
-                            var plainMatches = 0;
-                            var plains = ['the', 'and', 'was', 'from', 'with', 'said', 'that', 'this'];
-                            for (var j = 0; j < words.length; j++) {
-                                if (plains.indexOf(words[j]) !== -1) plainMatches++;
-                            }
-                            if (plainMatches === 0 || rotMatches > plainMatches * 2) {
-                                return shiftRot1Str(text);
-                            } else {
-                                var m = text.match(/\b(uif|boe|xbt|gspn|pwfs|Qmbzfst|Spcjotpo|Npshbo|boopvodfnfou)\b/i);
-                                if (m && m.index !== undefined) {
-                                    return text.substring(0, m.index) + shiftRot1Str(text.substring(m.index));
-                                }
-                            }
-                        }
-                        return text;
-                    }
-                    var textNodes = document.querySelectorAll('p, div.article-body p, article p, [class*="content"] p');
-                    textNodes.forEach(function(pNode) {
-                        if (pNode.children.length === 0) {
-                            var orig = pNode.textContent || '';
-                            var decoded = decodeRot1IfMatched(orig);
-                            if (decoded !== orig) pNode.textContent = decoded;
-                        } else {
-                            pNode.childNodes.forEach(function(child) {
-                                if (child.nodeType === 3) {
-                                    var orig = child.nodeValue || '';
-                                    var decoded = decodeRot1IfMatched(orig);
-                                    if (decoded !== orig) child.nodeValue = decoded;
-                                }
-                            });
-                        }
-                    });
-                } catch(rote) {}
 
                 return Math.max(
                     document.body ? document.body.scrollHeight : 0,
@@ -530,7 +559,6 @@ object PaywallBypassHelper {
 
         webView.evaluateJavascript(unlockScript) {
             DiagnosticLogHelper.log(TAG, "DOM sanitization and unlock script finished")
-            // Small delay (150ms) to allow DOM layout reflow before saveWebArchive / PDF canvas draw
             webView.postDelayed({ onComplete() }, 150L)
         }
     }

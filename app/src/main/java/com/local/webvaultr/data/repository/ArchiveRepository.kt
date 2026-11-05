@@ -90,7 +90,8 @@ class ArchiveRepository(
         val aiResult = aiProcessor.summarizeAndTag(
             title = rawCapture.resolvedTitle,
             rawText = rawCapture.extractedDomText,
-            ocrText = ocrText
+            ocrText = ocrText,
+            publisherTags = rawCapture.keywords
         )
 
         val durationMs = System.currentTimeMillis() - startEpochMs

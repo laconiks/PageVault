@@ -65,6 +65,8 @@ import com.local.webvaultr.data.local.RssSubscription
 import com.local.webvaultr.ui.theme.ThemeMode
 import com.local.webvaultr.util.AppUiPreferences
 import com.local.webvaultr.util.DomainBrandPalette
+import com.local.webvaultr.util.ExportAndShareHelper
+import com.local.webvaultr.util.SavedSiteCredential
 import com.local.webvaultr.util.SiteCredentialManager
 import java.io.File
 import java.text.SimpleDateFormat
@@ -255,10 +257,15 @@ fun InteractiveSiteLoginDialog(
     var domainInput by remember { mutableStateOf(initialDomain) }
     var usernameInput by remember { mutableStateOf("") }
     var passwordInput by remember { mutableStateOf("") }
+    var cookieCount by remember { mutableIntStateOf(0) }
     var targetUrl by remember {
-        mutableStateOf(if (initialDomain.isNotBlank()) "https://$initialDomain" else "https://")
+        mutableStateOf(
+            if (initialDomain.isNotBlank()) SiteCredentialManager.getLoginUrlForDomain(initialDomain)
+            else "https://myaccount.nytimes.com/auth/login"
+        )
     }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+    val popularSites = listOf("nytimes.com", "wsj.com", "bostonglobe.com", "washingtonpost.com", "theatlantic.com")
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -283,7 +290,7 @@ fun InteractiveSiteLoginDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text("Subscriber Login & Cookie Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text("Log in once. WebVaultr saves your session & cookies locally.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Auto-maps publisher sign-in pages and stores AES-256 session cookies.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     IconButton(onClick = onDismiss) {
@@ -291,7 +298,28 @@ fun InteractiveSiteLoginDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Popular Publication Quick Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    popularSites.forEach { site ->
+                        SuggestionChip(
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                domainInput = site
+                                val loginUrl = SiteCredentialManager.getLoginUrlForDomain(site)
+                                targetUrl = loginUrl
+                                webViewInstance?.loadUrl(loginUrl)
+                            },
+                            label = { Text(site.substringBefore("."), style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedTextField(
@@ -305,7 +333,7 @@ fun InteractiveSiteLoginDialog(
                         onClick = {
                             AppUiPreferences.triggerHaptic(localView)
                             val clean = domainInput.trim().removePrefix("https://").removePrefix("http://")
-                            val newUrl = if (clean.startsWith("http")) clean else "https://$clean"
+                            val newUrl = SiteCredentialManager.getLoginUrlForDomain(clean)
                             targetUrl = newUrl
                             webViewInstance?.loadUrl(newUrl)
                         },
@@ -321,20 +349,38 @@ fun InteractiveSiteLoginDialog(
                     OutlinedTextField(
                         value = usernameInput,
                         onValueChange = { usernameInput = it },
-                        label = { Text("Username / Email") },
+                        label = { Text("Subscriber Email / Username") },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedTextField(
                         value = passwordInput,
                         onValueChange = { passwordInput = it },
-                        label = { Text("Password (optional)") },
+                        label = { Text("Password (Auto-Fills)") },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                // Cookie Confirmation Status Banner
+                if (cookieCount > 0) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "🍪 $cookieCount active subscriber cookies synced locally for $domainInput",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Surface(
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -349,7 +395,7 @@ fun InteractiveSiteLoginDialog(
                                 settings.apply {
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
-                                    userAgentString = PaywallBypassHelper.CHROME_MOBILE_USER_AGENT
+                                    userAgentString = PaywallBypassHelper.getAuthenticChromeUserAgent(ctx)
                                 }
                                 CookieManager.getInstance().setAcceptCookie(true)
                                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
@@ -357,6 +403,13 @@ fun InteractiveSiteLoginDialog(
                                     override fun onPageFinished(view: WebView?, url: String?) {
                                         super.onPageFinished(view, url)
                                         CookieManager.getInstance().flush()
+                                        if (url != null) {
+                                            cookieCount = SiteCredentialManager.getCookieCountForUrl(url)
+                                        }
+                                        if (usernameInput.isNotBlank()) {
+                                            val cred = SavedSiteCredential(domain = domainInput, username = usernameInput, password = passwordInput)
+                                            view?.evaluateJavascript(SiteCredentialManager.buildAutoLoginJs(cred), null)
+                                        }
                                     }
                                 }
                                 if (targetUrl.isNotBlank() && targetUrl != "https://") {
@@ -402,6 +455,7 @@ fun InteractiveSiteLoginDialog(
     }
 }
 
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun VaultArticleCard(
@@ -416,6 +470,7 @@ fun VaultArticleCard(
     onRecaptureNoJs: (() -> Unit)? = null,
     onExportMarkdown: (() -> Unit)? = null,
     onOpenMarkdown: ((ArchivedPage) -> Unit)? = null,
+    onShareTxt: (() -> Unit)? = null,
     onRepull: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -940,6 +995,45 @@ fun VaultArticleCard(
                         }
                     }
 
+                    // 💬 .txt Discord / iOS Pill
+                    if (onShareTxt != null) {
+                        Surface(
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                onShareTxt()
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(
+                                        "💬 .txt / Discord",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "iPhone & chat friendly",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // 🔄 Pull v$nextVersion Pill
                     if (onRepull != null) {
                         val nextV = (revisions.maxOfOrNull { it.versionNumber } ?: page.versionNumber) + 1
@@ -1043,6 +1137,7 @@ fun VaultCompactRow(
     onExportPdf: () -> Unit,
     onExportMarkdown: (() -> Unit)? = null,
     onOpenMarkdown: ((ArchivedPage) -> Unit)? = null,
+    onShareTxt: (() -> Unit)? = null,
     onDelete: () -> Unit
 ) {
     val localView = LocalView.current
@@ -1152,6 +1247,17 @@ fun VaultCompactRow(
                         modifier = Modifier.size(28.dp)
                     ) {
                         Icon(Icons.Default.Description, contentDescription = "Markdown", tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                    }
+                }
+                if (onShareTxt != null) {
+                    IconButton(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            onShareTxt()
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "Share .txt", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
                     }
                 }
                 IconButton(
@@ -1514,7 +1620,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About WebVaultr v0.8.3", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.8.4", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,
@@ -1561,6 +1667,47 @@ fun SettingsAndAboutDialog(
                     Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Export Troubleshooting Log")
+                }
+
+                HorizontalDivider()
+                // 📸 QA Snapshot Vault
+                val qaDir = remember { File(context.filesDir, "qa_snapshots") }
+                var qaFiles by remember { mutableStateOf(qaDir.listFiles()?.filter { it.extension == "png" }?.toList() ?: emptyList()) }
+                val exportHelper = remember { ExportAndShareHelper(context) }
+
+                Text("📸 QA Snapshot Vault", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("Visual captures taken with the QA Snap button in the offline MHTML reader.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Saved Snapshots: ${qaFiles.size}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+
+                if (qaFiles.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                exportHelper.shareFilesToDriveOrApps(qaFiles, "image/png")
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Share All (${qaFiles.size})")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                qaFiles.forEach { it.delete() }
+                                qaFiles = emptyList()
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Clear")
+                        }
+                    }
                 }
             }
         },

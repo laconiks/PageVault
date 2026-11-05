@@ -78,7 +78,6 @@ class ExportAndShareHelper(private val context: Context) {
                         currentLine = StringBuilder(testLine)
                     } else {
                         if (currentLine.isNotEmpty()) result.add(currentLine.toString())
-                        // Handle very long unbroken URLs
                         if (paint.measureText(word) > maxWidthPt) {
                             word.chunked(65).forEach { chunk -> result.add(chunk) }
                             currentLine = StringBuilder()
@@ -171,14 +170,12 @@ class ExportAndShareHelper(private val context: Context) {
                             val scale = contentWidth.toFloat() / bitmap.width.toFloat()
                             var srcY = 0
 
-                            // If very little room left on Page 1, start screenshot cleanly on Page 2
                             if (bottomLimit - yPos < 220f) {
                                 startNewPdfPage()
                             }
 
                             while (srcY < bitmap.height) {
                                 val availHeightPt = (bottomLimit - yPos).coerceAtLeast(100f)
-                                // How many source bitmap vertical pixels fit in availHeightPt at 1:1 aspect ratio?
                                 val maxSrcSliceHeightPx = (availHeightPt / scale).toInt().coerceAtLeast(1)
                                 val actualSrcSlicePx = minOf(maxSrcSliceHeightPx, bitmap.height - srcY)
                                 val destSliceHeightPt = (actualSrcSlicePx * scale).toInt()
@@ -205,7 +202,7 @@ class ExportAndShareHelper(private val context: Context) {
                     }
                 }
 
-                // 6. Paginate Full Extracted Article Text (So PDF also has clean readable text pages)
+                // 6. Paginate Full Extracted Article Text (strip #### subheaders and sponsored lines)
                 if (page.extractedTextSummary.length > 300) {
                     if (bottomLimit - yPos < 140f) {
                         startNewPdfPage()
@@ -214,7 +211,29 @@ class ExportAndShareHelper(private val context: Context) {
                     }
                     canvas.drawText("Extracted Article Body Text:", margin.toFloat(), yPos, sectionPaint)
                     yPos += 15f
-                    val bodyLines = wrapTextToLines(page.extractedTextSummary, bodyPaint, contentWidth.toFloat())
+
+                    val filteredBody = page.extractedTextSummary
+                        .lines()
+                        .filterNot { line ->
+                            val t = line.trim()
+                            t.equals("Advertisement", ignoreCase = true) ||
+                                t.equals("ADVERTISEMENT", ignoreCase = true) ||
+                                t.equals("Sponsored Content", ignoreCase = true) ||
+                                t.startsWith("Photo:", ignoreCase = true) ||
+                                t.startsWith("Image:", ignoreCase = true) ||
+                                t.startsWith("Subscribe", ignoreCase = true) ||
+                                t.equals("Loading...", ignoreCase = true) ||
+                                t.equals("Loading", ignoreCase = true)
+                        }
+                        .joinToString("\n") { line ->
+                            if (line.trim().startsWith("####")) {
+                                line.trim().removePrefix("####").trim()
+                            } else {
+                                line
+                            }
+                        }
+
+                    val bodyLines = wrapTextToLines(filteredBody, bodyPaint, contentWidth.toFloat())
                     for (line in bodyLines) {
                         if (line.isEmpty()) {
                             yPos += 8f
@@ -275,18 +294,15 @@ class ExportAndShareHelper(private val context: Context) {
                 pages.forEachIndexed { idx, page ->
                     val captureDate = dateFormat.format(Date(page.timestampEpochMillis))
                     appendLine("## [${idx + 1}] ${page.title} (v${page.versionNumber})")
-                    appendLine("```yaml")
-                    appendLine("uuid: \"${page.uuid}\"")
-                    appendLine("parent_uuid: \"${page.parentUuid ?: "root"}\"")
-                    appendLine("version: ${page.versionNumber}")
-                    appendLine("source_url: \"${page.originalUrl}\"")
-                    appendLine("domain: \"${page.siteName}\"")
-                    appendLine("author: \"${page.author}\"")
-                    appendLine("captured_at: \"$captureDate\"")
-                    appendLine("capture_duration_sec: ${String.format(Locale.US, "%.1f", page.captureDurationMs / 1000.0)}")
-                    appendLine("on_device_ai_model: \"${page.aiModelUsed}\"")
-                    appendLine("tags: [${page.aiTags.joinToString(", ") { "\"$it\"" }}]")
-                    appendLine("```")
+                    appendLine("- **Source URL:** ${page.originalUrl}")
+                    appendLine("- **Domain:** ${page.siteName.ifBlank { "Unknown" }}")
+                    if (page.author.isNotBlank()) appendLine("- **Author:** ${page.author}")
+                    appendLine("- **Captured At:** $captureDate")
+                    appendLine("- **Capture Duration:** ${String.format(Locale.US, "%.1fs", page.captureDurationMs / 1000.0)}")
+                    appendLine("- **AI Model:** ${page.aiModelUsed}")
+                    if (page.aiTags.isNotEmpty()) {
+                        appendLine("- **Tags:** ${page.aiTags.joinToString(", ") { "#$it" }}")
+                    }
                     appendLine()
                     if (page.changeDiffSummary.isNotBlank()) {
                         appendLine("### 🔄 Version Diff vs. Previous Pull")
@@ -296,7 +312,7 @@ class ExportAndShareHelper(private val context: Context) {
                     appendLine("### 🧠 On-Device AI Summary")
                     appendLine(page.aiSummary.ifBlank { page.extractedTextSummary })
                     appendLine()
-                    appendLine("### 📄 Extracted DOM Text (Corpus Body for Word Mapping)")
+                    appendLine("### 📄 Extracted DOM Text")
                     appendLine(page.extractedTextSummary.ifBlank { "No DOM text extracted." })
                     appendLine()
                     if (page.ocrText.isNotBlank() && page.extractedTextSummary.trim().length < 300) {
@@ -315,6 +331,41 @@ class ExportAndShareHelper(private val context: Context) {
         } catch (t: Throwable) {
             DiagnosticLogHelper.log(TAG, "generateBatchMarkdown failed: ${t.localizedMessage}")
             t.printStackTrace()
+            null
+        }
+    }
+
+    /**
+     * Generates a clean plain text (.txt) export formatted cleanly for sharing directly to iPhone Notes, Discord, or Messages.
+     */
+    suspend fun generatePlainTextForDiscordAndIphone(page: ArchivedPage): File? = withContext(Dispatchers.IO) {
+        try {
+            val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val outFile = File(exportDir, "WebVaultr_${page.uuid.take(8)}_share.txt")
+            val cleanBody = page.extractedTextSummary
+                .lines()
+                .filterNot { line ->
+                    val t = line.trim()
+                    t.startsWith("####") || t.startsWith("#") || t.equals("Advertisement", true) || t.equals("Loading...", true)
+                }
+                .joinToString("\n")
+                .trim()
+
+            val textContent = buildString {
+                appendLine(page.title)
+                appendLine(page.originalUrl)
+                if (page.siteName.isNotBlank()) appendLine("Site: ${page.siteName}")
+                if (page.author.isNotBlank()) appendLine("By: ${page.author}")
+                appendLine()
+                appendLine("=== SUMMARY ===")
+                appendLine(page.aiSummary.ifBlank { "Archived with WebVaultr." })
+                appendLine()
+                appendLine("=== ARTICLE TEXT ===")
+                appendLine(cleanBody)
+            }
+            outFile.writeText(textContent)
+            outFile
+        } catch (e: Exception) {
             null
         }
     }

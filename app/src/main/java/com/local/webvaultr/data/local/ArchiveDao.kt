@@ -14,6 +14,9 @@ interface ArchiveDao {
     @Query("SELECT * FROM archived_pages ORDER BY timestampEpochMillis DESC")
     fun observeAllArchives(): Flow<List<ArchivedPage>>
 
+    @Query("SELECT * FROM archived_pages ORDER BY timestampEpochMillis DESC")
+    suspend fun getAllPagesSync(): List<ArchivedPage>
+
     @Query("""
         SELECT archived_pages.* FROM archived_pages
         JOIN archived_pages_fts ON archived_pages.rowid = archived_pages_fts.rowid

@@ -1,23 +1,32 @@
 package com.local.webvaultr.ui
 
+import android.app.Activity
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Web
@@ -39,10 +48,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.local.webvaultr.data.local.ArchiveDatabase
+import com.local.webvaultr.data.local.ArchivedPage
 import com.local.webvaultr.ui.theme.PocketArchiveTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 private enum class ViewerMode { MHTML, SCREENSHOT, READER }
 
@@ -54,14 +65,16 @@ class OfflineMhtmlViewerActivity : ComponentActivity() {
         val screenshotPath = intent.getStringExtra("SCREENSHOT_PATH")
         val pageTitle = intent.getStringExtra("PAGE_TITLE") ?: "Vault Snapshot"
         val originalUrl = intent.getStringExtra("ORIGINAL_URL") ?: ""
+        val pageUuid = intent.getStringExtra("PAGE_UUID") ?: ""
 
         setContent {
             PocketArchiveTheme {
                 OfflineViewerScreen(
-                    title = pageTitle,
-                    originalUrl = originalUrl,
-                    mhtmlPath = mhtmlPath,
-                    screenshotPath = screenshotPath,
+                    initialTitle = pageTitle,
+                    initialUrl = originalUrl,
+                    initialMhtmlPath = mhtmlPath,
+                    initialScreenshotPath = screenshotPath,
+                    initialUuid = pageUuid,
                     onBack = { finish() }
                 )
             }
@@ -72,27 +85,70 @@ class OfflineMhtmlViewerActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OfflineViewerScreen(
-    title: String,
-    originalUrl: String,
-    mhtmlPath: String?,
-    screenshotPath: String?,
+    initialTitle: String,
+    initialUrl: String,
+    initialMhtmlPath: String?,
+    initialScreenshotPath: String?,
+    initialUuid: String,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
     var viewerMode by remember { mutableStateOf(ViewerMode.MHTML) }
-    var readerText by remember { mutableStateOf("") }
 
-    LaunchedEffect(originalUrl) {
+    var allPages by remember { mutableStateOf<List<ArchivedPage>>(emptyList()) }
+    var currentIndex by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             runCatching {
                 val dao = ArchiveDatabase.getInstance(context).archiveDao()
-                val page = dao.getLatestByUrl(originalUrl)
-                if (page != null) {
-                    val text = page.extractedTextSummary.ifBlank { page.aiSummary }
-                    if (text.isNotBlank()) readerText = text
+                val list = dao.getAllPagesSync()
+                if (list.isNotEmpty()) {
+                    allPages = list
+                    val idx = list.indexOfFirst {
+                        (initialUuid.isNotBlank() && it.uuid == initialUuid) ||
+                            (initialUrl.isNotBlank() && it.originalUrl.equals(initialUrl, ignoreCase = true)) ||
+                            it.title.equals(initialTitle, ignoreCase = true)
+                    }
+                    if (idx >= 0) currentIndex = idx
                 }
             }
+        }
+    }
+
+    val currentPage = allPages.getOrNull(currentIndex)
+    val title = currentPage?.title ?: initialTitle
+    val originalUrl = currentPage?.originalUrl ?: initialUrl
+    val mhtmlPath = currentPage?.mhtmlFilePath ?: initialMhtmlPath
+    val screenshotPath = currentPage?.screenshotFilePath ?: initialScreenshotPath
+    val readerText = currentPage?.extractedTextSummary?.ifBlank { currentPage.aiSummary } ?: ""
+
+    fun saveQaSnapshot() {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        runCatching {
+            val qaDir = File(context.filesDir, "qa_snapshots").apply { mkdirs() }
+            val snapFile = File(qaDir, "qa_snap_${System.currentTimeMillis()}.png")
+
+            val activity = context as? Activity
+            val decorView = activity?.window?.decorView?.rootView
+            if (decorView != null && decorView.width > 0 && decorView.height > 0) {
+                val bmp = Bitmap.createBitmap(decorView.width, decorView.height, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bmp)
+                decorView.draw(canvas)
+                FileOutputStream(snapFile).use { out ->
+                    bmp.compress(Bitmap.CompressFormat.PNG, 95, out)
+                }
+                bmp.recycle()
+                Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
+            } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+                File(screenshotPath).copyTo(snapFile, overwrite = true)
+                Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Unable to capture QA snap", Toast.LENGTH_SHORT).show()
+            }
+        }.onFailure { err ->
+            Toast.makeText(context, "QA Snap error: ${err.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -116,7 +172,7 @@ fun OfflineViewerScreen(
                         Text(
                             text = when (viewerMode) {
                                 ViewerMode.MHTML -> "Offline MHTML Archive"
-                                ViewerMode.SCREENSHOT -> "Full-Page Vertical Screenshot (Scroll & Double-Tap Zoom)"
+                                ViewerMode.SCREENSHOT -> "Full-Page Vertical Screenshot (Scroll & Zoom)"
                                 ViewerMode.READER -> "Clean Unblocked Reader View"
                             },
                             style = MaterialTheme.typography.labelSmall,
@@ -138,6 +194,15 @@ fun OfflineViewerScreen(
                     }
                 },
                 actions = {
+                    // 📸 QA Snap Button
+                    IconButton(onClick = { saveQaSnapshot() }) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Take QA Snapshot",
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+
                     // Toggle Clean Reader View
                     IconButton(
                         onClick = {
@@ -198,6 +263,55 @@ fun OfflineViewerScreen(
                     }
                 }
             )
+        },
+        bottomBar = {
+            if (allPages.size > 1) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp,
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(
+                            onClick = {
+                                if (currentIndex > 0) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex--
+                                }
+                            },
+                            enabled = currentIndex > 0
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.NavigateBefore, contentDescription = "Previous Article")
+                        }
+
+                        Text(
+                            text = "Article ${currentIndex + 1} of ${allPages.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        IconButton(
+                            onClick = {
+                                if (currentIndex < allPages.size - 1) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex++
+                                }
+                            },
+                            enabled = currentIndex < allPages.size - 1
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.NavigateNext, contentDescription = "Next Article")
+                        }
+                    }
+                }
+            }
         }
     ) { paddingValues ->
         Box(
@@ -209,7 +323,21 @@ fun OfflineViewerScreen(
             when (viewerMode) {
                 ViewerMode.SCREENSHOT -> {
                     if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
-                        ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+                        ZoomableScreenshotCanvas(
+                            screenshotPath = screenshotPath,
+                            onSwipeLeft = {
+                                if (currentIndex < allPages.size - 1) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex++
+                                }
+                            },
+                            onSwipeRight = {
+                                if (currentIndex > 0) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex--
+                                }
+                            }
+                        )
                     } else {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("Screenshot file not available for this capture.")
@@ -217,13 +345,28 @@ fun OfflineViewerScreen(
                     }
                 }
                 ViewerMode.READER -> {
-                    OfflineReaderExtractedView(mhtmlPath = mhtmlPath, title = title, fallbackText = readerText)
+                    OfflineReaderExtractedView(
+                        title = title,
+                        fallbackText = readerText,
+                        onSwipeLeft = {
+                            if (currentIndex < allPages.size - 1) {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                currentIndex++
+                            }
+                        },
+                        onSwipeRight = {
+                            if (currentIndex > 0) {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                currentIndex--
+                            }
+                        }
+                    )
                 }
                 ViewerMode.MHTML -> {
                     if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
                         OfflineMhtmlWebView(
-                            mhtmlPath = mhtmlPath,
-                            onExtractedTextReady = { extracted -> if (extracted.length > readerText.length) readerText = extracted }
+                            key = mhtmlPath,
+                            mhtmlPath = mhtmlPath
                         )
                     } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
                         ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
@@ -240,46 +383,61 @@ fun OfflineViewerScreen(
 
 @Composable
 fun OfflineMhtmlWebView(
-    mhtmlPath: String,
-    @Suppress("UNUSED_PARAMETER") onExtractedTextReady: (String) -> Unit = {}
+    key: String,
+    mhtmlPath: String
 ) {
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { context ->
-            WebView(context).apply {
-                settings.apply {
-                    javaScriptEnabled = false
-                    domStorageEnabled = false
-                    loadsImagesAutomatically = true
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
-                    blockNetworkLoads = true
-                    allowFileAccess = true
-                    allowContentAccess = true
-                    builtInZoomControls = true
-                    displayZoomControls = false
+    key(key) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
+                WebView(context).apply {
+                    settings.apply {
+                        javaScriptEnabled = false
+                        domStorageEnabled = false
+                        loadsImagesAutomatically = true
+                        useWideViewPort = true
+                        loadWithOverviewMode = true
+                        blockNetworkLoads = true
+                        allowFileAccess = true
+                        allowContentAccess = true
+                        builtInZoomControls = true
+                        displayZoomControls = false
+                    }
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean = true
+                    }
+                    loadUrl(Uri.fromFile(File(mhtmlPath)).toString())
                 }
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(
-                        view: WebView?,
-                        request: WebResourceRequest?
-                    ): Boolean = true
-                }
-                loadUrl(Uri.fromFile(File(mhtmlPath)).toString())
             }
-        }
-    )
+        )
+    }
 }
 
 @Composable
 fun OfflineReaderExtractedView(
-    @Suppress("UNUSED_PARAMETER") mhtmlPath: String?,
     title: String,
-    fallbackText: String
+    fallbackText: String,
+    onSwipeLeft: () -> Unit = {},
+    onSwipeRight: () -> Unit = {}
 ) {
+    var dragAmount by remember { mutableFloatStateOf(0f) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, drag -> dragAmount += drag },
+                    onDragEnd = {
+                        if (dragAmount < -60f) onSwipeLeft()
+                        else if (dragAmount > 60f) onSwipeRight()
+                        dragAmount = 0f
+                    }
+                )
+            }
             .verticalScroll(rememberScrollState())
             .padding(18.dp)
     ) {
@@ -293,7 +451,7 @@ fun OfflineReaderExtractedView(
         HorizontalDivider()
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            text = fallbackText.ifBlank { "Switch to MHTML view for 1 second first to hydrate Reader text." },
+            text = fallbackText.ifBlank { "No reader text available for this capture." },
             style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
             color = MaterialTheme.colorScheme.onBackground
         )
@@ -301,7 +459,11 @@ fun OfflineReaderExtractedView(
 }
 
 @Composable
-fun ZoomableScreenshotCanvas(screenshotPath: String) {
+fun ZoomableScreenshotCanvas(
+    screenshotPath: String,
+    onSwipeLeft: () -> Unit = {},
+    onSwipeRight: () -> Unit = {}
+) {
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp.dp
     var isZoomed by remember { mutableStateOf(false) }
@@ -309,12 +471,26 @@ fun ZoomableScreenshotCanvas(screenshotPath: String) {
     val verticalScrollState = rememberScrollState()
     val horizontalScrollState = rememberScrollState()
 
+    var dragAmount by remember { mutableFloatStateOf(0f) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White)
             .verticalScroll(verticalScrollState)
             .then(if (isZoomed) Modifier.horizontalScroll(horizontalScrollState) else Modifier)
+            .pointerInput(isZoomed) {
+                if (!isZoomed) {
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { _, drag -> dragAmount += drag },
+                        onDragEnd = {
+                            if (dragAmount < -60f) onSwipeLeft()
+                            else if (dragAmount > 60f) onSwipeRight()
+                            dragAmount = 0f
+                        }
+                    )
+                }
+            }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { isZoomed = !isZoomed }

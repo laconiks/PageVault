@@ -152,7 +152,6 @@ object DomainBrandPalette {
                 badgeText = Color(0xFFCCFBF1)
             )
             else -> {
-                // Deterministic vibrant brand tint for any other domain
                 val palettes = listOf(
                     SiteBrandColors(Color(0xFF1A0E2E), Color(0xFFA855F7), Color(0xFF6B21A8), Color(0xFFF3E8FF)),
                     SiteBrandColors(Color(0xFF08222B), Color(0xFF00F0FF), Color(0xFF0E7490), Color(0xFFCFFAFE)),
@@ -260,6 +259,63 @@ object SiteCredentialManager {
     fun findCredentialForUrl(context: Context, url: String): SavedSiteCredential? {
         val lower = url.lowercase()
         return getSavedCredentials(context).firstOrNull { lower.contains(it.domain.lowercase()) }
+    }
+
+    fun getLoginUrlForDomain(domainOrUrl: String): String {
+        val d = domainOrUrl.trim().lowercase()
+        return when {
+            d.contains("nytimes") -> "https://myaccount.nytimes.com/auth/login"
+            d.contains("wsj") -> "https://accounts.wsj.com/login"
+            d.contains("bostonglobe") -> "https://identity.bostonglobe.com/login"
+            d.contains("washingtonpost") -> "https://www.washingtonpost.com/subscribe/signin/"
+            d.contains("theatlantic") -> "https://www.theatlantic.com/account/login/"
+            d.contains("economist") -> "https://authenticate.economist.com/"
+            d.contains("newyorker") -> "https://www.newyorker.com/account/sign-in"
+            d.contains("bloomberg") -> "https://www.bloomberg.com/account/login"
+            d.contains("latimes") -> "https://membership.latimes.com/login"
+            d.contains("wired") -> "https://www.wired.com/account/sign-in"
+            else -> {
+                val base = domainOrUrl.trim()
+                    .removePrefix("https://").removePrefix("http://").removePrefix("www.")
+                    .substringBefore("/")
+                if (base.isNotBlank()) "https://$base/login" else "https://www.google.com"
+            }
+        }
+    }
+
+    fun buildAutoLoginJs(credential: SavedSiteCredential): String {
+        val u = JSONObject.quote(credential.username)
+        val p = JSONObject.quote(credential.password)
+        return """
+            (function() {
+                try {
+                    var userInputs = document.querySelectorAll('input[type="email"], input[type="text"][name*="user"], input[type="text"][name*="email"], input[type="text"][id*="user"], input[type="text"][id*="email"], input[autocomplete="username"], input[name="login"]');
+                    if (userInputs.length > 0) {
+                        var userInput = userInputs[0];
+                        userInput.value = $u;
+                        userInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        userInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    var passInputs = document.querySelectorAll('input[type="password"]');
+                    if (passInputs.length > 0) {
+                        var passInput = passInputs[0];
+                        passInput.value = $p;
+                        passInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        passInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    return (userInputs.length > 0 || passInputs.length > 0) ? "INJECTED" : "NO_INPUTS";
+                } catch(e) {
+                    return "ERROR: " + e;
+                }
+            })();
+        """.trimIndent()
+    }
+
+    fun getCookieCountForUrl(url: String): Int {
+        val cookies = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+        return if (!cookies.isNullOrBlank()) {
+            cookies.split(";").count { it.isNotBlank() }
+        } else 0
     }
 
     private fun persistList(context: Context, list: List<SavedSiteCredential>) {
