@@ -20,7 +20,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -105,7 +104,6 @@ fun OfflineViewerScreen(
 
     var allPages by remember { mutableStateOf<List<ArchivedPage>>(emptyList()) }
     var currentIndex by remember { mutableIntStateOf(0) }
-    var topBarDragAmount by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -187,32 +185,6 @@ fun OfflineViewerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                modifier = Modifier.pointerInput(allPages.size, currentIndex) {
-                    if (allPages.size > 1) {
-                        detectHorizontalDragGestures(
-                            onHorizontalDrag = { _, drag ->
-                                topBarDragAmount += drag
-                            },
-                            onDragEnd = {
-                                if (topBarDragAmount < -50f) {
-                                    if (currentIndex < allPages.size - 1) {
-                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        currentIndex++
-                                    }
-                                } else if (topBarDragAmount > 50f) {
-                                    if (currentIndex > 0) {
-                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        currentIndex--
-                                    }
-                                }
-                                topBarDragAmount = 0f
-                            },
-                            onDragCancel = {
-                                topBarDragAmount = 0f
-                            }
-                        )
-                    }
-                },
                 title = {
                     Column {
                         Text(
@@ -252,43 +224,6 @@ fun OfflineViewerScreen(
                     }
                 },
                 actions = {
-                    // Previous Article Button
-                    if (allPages.size > 1) {
-                        IconButton(
-                            onClick = {
-                                if (currentIndex > 0) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentIndex--
-                                }
-                            },
-                            enabled = currentIndex > 0,
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                                contentDescription = "Previous Article",
-                                tint = if (currentIndex > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                            )
-                        }
-                        IconButton(
-                            onClick = {
-                                if (currentIndex < allPages.size - 1) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentIndex++
-                                }
-                            },
-                            enabled = currentIndex < allPages.size - 1,
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = "Next Article",
-                                tint = if (currentIndex < allPages.size - 1) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-
                     // Toggle Clean Reader View
                     IconButton(
                         onClick = {
@@ -371,6 +306,61 @@ fun OfflineViewerScreen(
                     }
                 }
             )
+        },
+        bottomBar = {
+            if (allPages.size > 1) {
+                Surface(
+                    color = Color(0xFF0C0D14),
+                    tonalElevation = 8.dp,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                if (currentIndex > 0) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex--
+                                }
+                            },
+                            enabled = currentIndex > 0
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous")
+                            Spacer(Modifier.width(4.dp))
+                            Text("Previous", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        Text(
+                            text = "Article ${currentIndex + 1} of ${allPages.size}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFFCEE09),
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        TextButton(
+                            onClick = {
+                                if (currentIndex < allPages.size - 1) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex++
+                                }
+                            },
+                            enabled = currentIndex < allPages.size - 1
+                        ) {
+                            Text("Next", fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next")
+                        }
+                    }
+                }
+            }
         }
     ) { paddingValues ->
         Box(
@@ -400,7 +390,7 @@ fun OfflineViewerScreen(
                     ViewerMode.MHTML -> {
                         if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
                             OfflineMhtmlWebView(
-                                key = stableKey,
+                                pageUuid = currentPage?.uuid ?: stableKey,
                                 mhtmlPath = mhtmlPath
                             )
                         } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
@@ -454,51 +444,54 @@ private fun fallbackQaSnap(context: Context, snapFile: File, screenshotPath: Str
 
 @Composable
 fun OfflineMhtmlWebView(
-    key: String,
+    pageUuid: String,
     mhtmlPath: String
 ) {
-    key(key) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { context ->
-                WebView(context).apply {
-                    settings.apply {
-                        javaScriptEnabled = false
-                        domStorageEnabled = false
-                        loadsImagesAutomatically = true
-                        useWideViewPort = true
-                        loadWithOverviewMode = true
-                        blockNetworkLoads = true
-                        allowFileAccess = true
-                        allowContentAccess = true
-                        builtInZoomControls = true
-                        displayZoomControls = false
-                    }
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): Boolean = true
-                    }
-                    val file = File(mhtmlPath)
-                    val headerSnippet = runCatching {
-                        file.bufferedReader().use { reader ->
-                            val buf = CharArray(256)
-                            val read = reader.read(buf)
-                            if (read > 0) String(buf, 0, read).trim().lowercase() else ""
-                        }
-                    }.getOrDefault("")
-
-                    if (headerSnippet.startsWith("<!doctype") || headerSnippet.startsWith("<html") || headerSnippet.startsWith("<div")) {
-                        val fullHtml = runCatching { file.readText() }.getOrDefault("")
-                        loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
-                    } else {
-                        loadUrl(Uri.fromFile(file).toString())
-                    }
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { context ->
+            WebView(context).apply {
+                settings.apply {
+                    javaScriptEnabled = false
+                    domStorageEnabled = false
+                    loadsImagesAutomatically = true
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                    blockNetworkLoads = false
+                    allowFileAccess = true
+                    allowContentAccess = true
+                    builtInZoomControls = true
+                    displayZoomControls = false
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean = true
                 }
             }
-        )
-    }
+        },
+        update = { webView ->
+            if (webView.tag != pageUuid) {
+                webView.tag = pageUuid
+                val file = File(mhtmlPath)
+                val headerSnippet = runCatching {
+                    file.bufferedReader().use { reader ->
+                        val buf = CharArray(256)
+                        val read = reader.read(buf)
+                        if (read > 0) String(buf, 0, read).trim().lowercase() else ""
+                    }
+                }.getOrDefault("")
+
+                if (headerSnippet.startsWith("<!doctype") || headerSnippet.startsWith("<html") || headerSnippet.startsWith("<div")) {
+                    val fullHtml = runCatching { file.readText() }.getOrDefault("")
+                    webView.loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
+                } else {
+                    webView.loadUrl(Uri.fromFile(file).toString())
+                }
+            }
+        }
+    )
 }
 
 @Composable

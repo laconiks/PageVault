@@ -345,11 +345,21 @@ object PaywallBypassHelper {
                     if (!document.getElementById('webvaultr-fit-style')) {
                         var styleEl = document.createElement('style');
                         styleEl.id = 'webvaultr-fit-style';
-                        styleEl.textContent = 'html, body { max-width: 100vw !important; overflow-x: hidden !important; overflow-y: visible !important; max-height: none !important; height: auto !important; position: static !important; } ' +
+                        styleEl.textContent = 'html, body { max-width: 100vw !important; overflow-x: hidden !important; overflow-y: visible !important; max-height: none !important; height: auto !important; position: static !important; opacity: 1 !important; visibility: visible !important; background-color: #ffffff !important; color: #111827 !important; } ' +
+                            'header ul, nav ul, [role="navigation"] ul { display: none !important; } ' +
                             'article, main, [role="main"], [class*="article-body"], [class*="story-body"], [class*="post-content"] { overflow: visible !important; max-height: none !important; height: auto !important; -webkit-mask-image: none !important; mask-image: none !important; } ' +
                             '[style*="blur"], .blur, [class*="blur"] { filter: none !important; -webkit-filter: none !important; } ' +
                             '.story-interrupt, .ad-slot, [class*="story-interrupt"], [class*="ad-slot"], [id*="story-interrupt"], [id*="ad-slot"], [data-ad-slot], [class*="story-ad"], [class*="ad-container"], [class*="ad-wrapper"], aside.ad, div.ad, div[id*="google_ads"], div[id*="dfp-ad"], [class*="tp-backdrop"], [class*="tp-modal"], [class*="piano-root"], [class*="paywall-overlay"], [class*="regwall"], #onetrust-consent-sdk, [class*="sp_message"], [class*="cmp-modal"] { display: none !important; }';
                         (document.head || document.documentElement).appendChild(styleEl);
+                    }
+
+                    // Convert preload stylesheets to standard stylesheets & clear loading classes for offline MHTML
+                    document.querySelectorAll('link[rel="preload"][as="style"]').forEach(function(lnk) {
+                        lnk.rel = 'stylesheet';
+                    });
+                    document.documentElement.classList.remove('js-loading', 'is-loading', 'wf-loading');
+                    if (document.body) {
+                        document.body.classList.remove('js-loading', 'is-loading', 'wf-loading');
                     }
 
                     // 2. Remove blocking paywall/cookie modal overlays
@@ -382,6 +392,9 @@ object PaywallBypassHelper {
                                 lower.indexOf('claim offer') !== -1 ||
                                 lower.indexOf('two ways to read this article') !== -1 ||
                                 lower.indexOf('subscribe to continue') !== -1 ||
+                                lower.indexOf('subscribe for free to continue reading') !== -1 ||
+                                lower.indexOf('weeks of unlimited access') !== -1 ||
+                                lower.indexOf('read distraction-free on substack') !== -1 ||
                                 lower.indexOf('already a subscriber? sign in') !== -1 ||
                                 lower.indexOf('advertisement') === 0) {
                                 el.remove();
@@ -444,10 +457,11 @@ object PaywallBypassHelper {
                         }
                     });
 
-                    // 6. Hydrate JSON-LD / Fusion paragraphs into #webvaultr-hydrated-body ONLY if story container has < 4 paragraphs
-                    var storyContainer = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]');
-                    var existingParaCount = storyContainer ? storyContainer.querySelectorAll('p').length : document.querySelectorAll('p').length;
-                    if (existingParaCount < 4 && !document.getElementById('webvaultr-hydrated-body')) {
+                    // 6. Hydrate JSON-LD / Fusion / Next.js paragraphs into #webvaultr-hydrated-body if story text < 1800 chars
+                    var storyContainer = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+                    var existingParas = Array.prototype.slice.call(storyContainer.querySelectorAll('p'));
+                    var cleanTextLen = existingParas.map(function(p) { return (p.innerText || '').trim(); }).join(' ').length;
+                    if (cleanTextLen < 1800 && !document.getElementById('webvaultr-hydrated-body')) {
                         var recoveredParas = [];
 
                         // 6a. JSON-LD articleBody
@@ -479,18 +493,65 @@ object PaywallBypassHelper {
                             } catch(e) {}
                         }
 
-                        if (recoveredParas.length >= 4) {
-                            var hydratedDiv = document.createElement('div');
-                            hydratedDiv.id = 'webvaultr-hydrated-body';
-                            hydratedDiv.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, serif; font-size: 18px; line-height: 1.65; color: #111;';
-                            recoveredParas.forEach(function(pText) {
-                                var pEl = document.createElement('p');
-                                pEl.style.cssText = 'margin-bottom: 16px;';
-                                pEl.textContent = pText;
-                                hydratedDiv.appendChild(pEl);
+                        // 6c. Next.js (__NEXT_DATA__)
+                        if (recoveredParas.length === 0) {
+                            var nextDataEl = document.getElementById('__NEXT_DATA__');
+                            if (nextDataEl && nextDataEl.textContent) {
+                                try {
+                                    var nextData = JSON.parse(nextDataEl.textContent);
+                                    function findNextParas(obj) {
+                                        if (!obj || typeof obj !== 'object') return;
+                                        if (Array.isArray(obj)) {
+                                            for (var i = 0; i < obj.length; i++) findNextParas(obj[i]);
+                                        } else {
+                                            if (Array.isArray(obj.content_elements)) {
+                                                obj.content_elements.forEach(function(item) {
+                                                    var raw = (item && (item.content || item.text)) || '';
+                                                    if (typeof raw === 'string' && raw.trim().length > 0) {
+                                                        recoveredParas.push(raw.replace(/<[^>]*>/g, '').trim());
+                                                    }
+                                                });
+                                            }
+                                            if (Array.isArray(obj.body)) {
+                                                obj.body.forEach(function(item) {
+                                                    var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
+                                                    if (typeof raw === 'string' && raw.trim().length > 0) {
+                                                        recoveredParas.push(raw.replace(/<[^>]*>/g, '').trim());
+                                                    }
+                                                });
+                                            }
+                                            for (var k in obj) {
+                                                if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
+                                                    findNextParas(obj[k]);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    findNextParas(nextData);
+                                } catch(e) {}
+                            }
+                        }
+
+                        var recoveredTextLen = recoveredParas.join(' ').length;
+                        if (recoveredTextLen > cleanTextLen + 350) {
+                            var existingTextSnippet = existingParas.map(function(p) { return (p.innerText || '').trim().substring(0, 40).toLowerCase(); });
+                            var newParasToAppend = recoveredParas.filter(function(r) {
+                                var rSnippet = r.substring(0, 40).toLowerCase();
+                                return existingTextSnippet.indexOf(rSnippet) === -1;
                             });
-                            var targetMount = storyContainer || document.body;
-                            targetMount.appendChild(hydratedDiv);
+
+                            if (newParasToAppend.length > 0) {
+                                var hydratedDiv = document.createElement('div');
+                                hydratedDiv.id = 'webvaultr-hydrated-body';
+                                hydratedDiv.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, serif; font-size: 18px; line-height: 1.65; color: #111;';
+                                newParasToAppend.forEach(function(pText) {
+                                    var pEl = document.createElement('p');
+                                    pEl.style.cssText = 'margin-bottom: 16px;';
+                                    pEl.textContent = pText;
+                                    hydratedDiv.appendChild(pEl);
+                                });
+                                storyContainer.appendChild(hydratedDiv);
+                            }
                         }
                     }
                 } catch (e) {}

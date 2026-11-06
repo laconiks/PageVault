@@ -11,6 +11,7 @@ import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.local.webvaultr.util.DiagnosticLogHelper
@@ -52,7 +53,7 @@ class WebArchiveCaptureManager(private val context: Context) {
         private const val MAX_CAPTURE_HEIGHT_PX = 11500
         private const val THUMBNAIL_HEIGHT_PX = 720
         private const val CAPTURE_TIMEOUT_MS = 60_000L
-        private const val PAGE_LOAD_TIMEOUT_MS = 12_000L
+        private const val PAGE_LOAD_TIMEOUT_MS = 9_000L
 
         private val DOM_STABILIZATION_JS = """
             (function() {
@@ -193,13 +194,26 @@ class WebArchiveCaptureManager(private val context: Context) {
                         articleMarkdown = (document.body && document.body.innerText) ? document.body.innerText.trim() : '';
                     }
 
+                    var bodyStyle = document.body ? window.getComputedStyle(document.body) : {};
+                    var pCount = document.querySelectorAll('article p, main p, .story-text p, .entry-content p').length;
+                    var ldCount = document.querySelectorAll('script[type="application/ld+json"]').length;
+                    var hasFusion = !!(window.Fusion && window.Fusion.globalContent);
+                    var domAudit = 'pCount=' + pCount +
+                        ',ldScripts=' + ldCount +
+                        ',hasFusion=' + hasFusion +
+                        ',sheets=' + (document.styleSheets ? document.styleSheets.length : 0) +
+                        ',bodyOp=' + (bodyStyle.opacity || '1') +
+                        ',bodyOv=' + (bodyStyle.overflowY || 'visible') +
+                        ',hydrated=' + !!document.getElementById('webvaultr-hydrated-body');
+
                     var payload = JSON.stringify({
                         title: resolvedPageTitle || '',
                         siteName: metaSite ? metaSite.content : '',
                         author: metaAuthor ? metaAuthor.content : '',
                         scrollHeight: Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0),
                         bodyText: articleMarkdown.substring(0, 75000),
-                        keywords: metaKeywords.slice(0, 10)
+                        keywords: metaKeywords.slice(0, 10),
+                        domAudit: domAudit
                     });
                     return btoa(unescape(encodeURIComponent(payload)));
                 } catch (e) {
@@ -252,18 +266,20 @@ class WebArchiveCaptureManager(private val context: Context) {
                         true
                     }
                     if (loadSuccess == null) {
-                        DiagnosticLogHelper.log(TAG, "12s load timeout reached; proceeding with DOM hydration and capture fallback")
+                        DiagnosticLogHelper.log(TAG, "${PAGE_LOAD_TIMEOUT_MS / 1000}s load timeout reached; proceeding with DOM hydration and capture fallback")
                     } else {
-                        DiagnosticLogHelper.log(TAG, "Page load completed within 12s limit")
+                        DiagnosticLogHelper.log(TAG, "Page load completed within ${PAGE_LOAD_TIMEOUT_MS / 1000}s limit")
                     }
 
-                    delay(500)
+                    // 2.2-second post-load settle delay so client-side hydration, stylesheets, and images finish painting
+                    DiagnosticLogHelper.log(TAG, "Post-load settle delay (2200ms)...")
+                    delay(2200L)
 
                     if (!disableJs) {
-                        DiagnosticLogHelper.log(TAG, "Scroll-priming lazy elements and unmasking DOM")
-                        for (offset in listOf(1500, 3500, 6000, 8500, 0)) {
+                        DiagnosticLogHelper.log(TAG, "Scroll-priming lazy elements and unmasking DOM in 3 increments")
+                        for (offset in listOf(900, 2200, 4000, 0)) {
                             webView.evaluateJavascript("window.scrollTo(0, $offset);", null)
-                            delay(100)
+                            delay(350L)
                         }
 
                         withTimeoutOrNull(3000L) {
@@ -294,6 +310,11 @@ class WebArchiveCaptureManager(private val context: Context) {
                     var extractedText = PaywallBypassHelper.stripReversedWordGibberish(
                         PaywallBypassHelper.decodeRot1IfObfuscated(parsed.optString("bodyText").ifBlank { resolvedTitle })
                     )
+
+                    val domAudit = parsed.optString("domAudit")
+                    if (domAudit.isNotBlank()) {
+                        DiagnosticLogHelper.log("DOM-Audit", "$domAudit | extractedChars=${extractedText.length}")
+                    }
 
                     val keywordsArr = parsed.optJSONArray("keywords")
                     val extractedKeywords = buildList {
@@ -374,6 +395,21 @@ class WebArchiveCaptureManager(private val context: Context) {
                     } else {
                         DiagnosticLogHelper.log(TAG, "MHTML archive saved successfully (${mhtmlFile.length()} bytes)")
                     }
+
+                    val archiveSig = runCatching {
+                        if (!mhtmlFile.exists() || mhtmlFile.length() == 0L) "Empty"
+                        else {
+                            val header = mhtmlFile.bufferedReader().use { reader ->
+                                val buf = CharArray(128)
+                                val read = reader.read(buf)
+                                if (read > 0) String(buf, 0, read).trim().lowercase() else ""
+                            }
+                            if (header.startsWith("from:") || header.contains("multipart/related") || header.contains("mime-version")) "MIME-MHTML"
+                            else if (header.startsWith("<!doctype") || header.startsWith("<html") || header.startsWith("<div")) "Synthetic-HTML"
+                            else "Unknown-Format"
+                        }
+                    }.getOrDefault("Unknown")
+                    DiagnosticLogHelper.log("MHTML-Audit", "Archive signature: $archiveSig (${mhtmlFile.length()} bytes) at ${mhtmlFile.name}")
 
                     // Capture screenshot + thumbnail from true visual WebView
                     DiagnosticLogHelper.log(TAG, "Capturing WebView screenshot ($VIEWPORT_WIDTH_PX x $measuredHeight)...")
@@ -483,14 +519,8 @@ class WebArchiveCaptureManager(private val context: Context) {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 DiagnosticLogHelper.log(TAG, "onProgressChanged: $newProgress%")
-                if (newProgress >= 75) {
-                    val targetView = view ?: webView
-                    targetView.evaluateJavascript("(document.body && document.body.innerText) ? document.body.innerText.trim().length : 0") { lenStr ->
-                        val textLen = lenStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
-                        if (textLen >= 800 || newProgress >= 98) {
-                            resumeSafely("onProgressChanged >= 75 (progress=$newProgress%, textLen=$textLen)")
-                        }
-                    }
+                if (newProgress == 100) {
+                    resumeSafely("onProgressChanged == 100%")
                 }
             }
         }
@@ -519,6 +549,20 @@ class WebArchiveCaptureManager(private val context: Context) {
                 if (request?.isForMainFrame == true) {
                     DiagnosticLogHelper.log(TAG, "onReceivedError (main frame): ${error?.description}")
                     resumeSafely("onReceivedError: ${error?.description}")
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                if (request?.isForMainFrame == true && errorResponse != null) {
+                    DiagnosticLogHelper.log(
+                        "HTTP-Audit",
+                        "MainFrame HTTP ${errorResponse.statusCode} (${errorResponse.reasonPhrase}) for ${request.url}"
+                    )
                 }
             }
         }
