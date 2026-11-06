@@ -209,15 +209,88 @@ object PaywallBypassHelper {
     }
 
     /**
-     * Freezes CSS animations and stabilizes the DOM before saving MHTML.
+     * Freezes CSS animations, eager-loads lazy images, removes blur filters,
+     * materializes CSSOM stylesheet rules, and stabilizes the DOM before saving MHTML.
      */
     fun freezeDomBeforeMhtmlSave(webView: WebView, onComplete: () -> Unit) {
         val js = """
             (function() {
                 try {
+                    // 1. Remove animation & blur filters
                     var s = document.createElement('style');
-                    s.textContent = '* { animation: none !important; transition: none !important; }';
+                    s.textContent = '* { animation: none !important; transition: none !important; } [style*="blur"], .blur, [class*="blur"] { filter: none !important; -webkit-filter: none !important; }';
                     (document.head || document.documentElement).appendChild(s);
+
+                    // 2. Unscramble ROT-1 text nodes in-DOM if detected
+                    try {
+                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                        var node;
+                        while(node = walker.nextNode()) {
+                            var val = node.nodeValue;
+                            if (val && val.length > 25 && /^[a-zA-Z\s.,'"!?]+$/.test(val)) {
+                                var sample = val.trim().split(/\s+/).slice(0, 5);
+                                var rotHits = 0;
+                                for (var si = 0; si < sample.length; si++) {
+                                    var w = sample[si].toLowerCase();
+                                    if (w === "uif" || w === "boe" || w === "up" || w === "jo" || w === "pg") rotHits++;
+                                }
+                                if (rotHits >= 2) {
+                                    var decoded = '';
+                                    for (var ci = 0; ci < val.length; ci++) {
+                                        var code = val.charCodeAt(ci);
+                                        if (code >= 66 && code <= 90) decoded += String.fromCharCode(code - 1);
+                                        else if (code === 65) decoded += 'Z';
+                                        else if (code >= 98 && code <= 122) decoded += String.fromCharCode(code - 1);
+                                        else if (code === 97) decoded += 'z';
+                                        else decoded += val.charAt(ci);
+                                    }
+                                    node.nodeValue = decoded;
+                                }
+                            }
+                        }
+                    } catch(re) {}
+
+                    // 3. Eager-load lazy images
+                    document.querySelectorAll('img').forEach(function(img) {
+                        var dSrc = img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src') || img.getAttribute('data-srcset');
+                        if (dSrc && !img.src) img.src = dSrc;
+                        var dSrcset = img.getAttribute('data-srcset');
+                        if (dSrcset && !img.srcset) img.srcset = dSrcset;
+                        img.removeAttribute('loading');
+                    });
+                    document.querySelectorAll('noscript').forEach(function(ns) {
+                        var text = ns.textContent || '';
+                        if (text.indexOf('<img') !== -1) {
+                            var div = document.createElement('div');
+                            div.innerHTML = text;
+                            var innerImg = div.querySelector('img');
+                            if (innerImg && innerImg.src && ns.parentNode) {
+                                ns.parentNode.insertBefore(innerImg, ns);
+                            }
+                        }
+                    });
+
+                    // 4. Materialize CSSOM dynamic style rules into style tags
+                    try {
+                        for (var i = 0; i < document.styleSheets.length; i++) {
+                            var sheet = document.styleSheets[i];
+                            if (!sheet.href && sheet.cssRules && sheet.cssRules.length > 0) {
+                                var styleEl = document.createElement('style');
+                                var cssText = '';
+                                for (var j = 0; j < sheet.cssRules.length; j++) {
+                                    cssText += sheet.cssRules[j].cssText + '\n';
+                                }
+                                styleEl.textContent = cssText;
+                                document.head.appendChild(styleEl);
+                            }
+                        }
+                    } catch(csse) {}
+
+                    // 5. Unlock scroll & height constraints
+                    document.documentElement.style.overflow = 'visible';
+                    document.documentElement.style.maxHeight = 'none';
+                    document.body.style.overflow = 'visible';
+                    document.body.style.maxHeight = 'none';
                 } catch(e) {}
             })();
         """.trimIndent()
@@ -270,11 +343,18 @@ object PaywallBypassHelper {
                     (document.head || document.documentElement).appendChild(widthStyle);
                 } catch(we) {}
 
-                // 1. Remove ONLY true subscriber/piano/regwall modal overlays (never touch nav or article containers)
+                // 1. Remove ONLY true subscriber/piano/regwall modal overlays, cookie banners & floating players
                 var paywallSelectors = [
                     '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
                     '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
                     '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]',
+                    // Offer gates & subscription overlays
+                    '[class*="offer-gate"]', '[class*="paywall-offer"]', '[class*="intro-offer"]',
+                    '[id*="offer-gate"]', '[class*="subscription-offer"]', '[class*="offer-container"]',
+                    // Cookie banners & consent overlays
+                    '[class*="cookie"]', '[id*="cookie"]', '[class*="consent"]', '[id*="consent"]',
+                    '[class*="onetrust"]', '[id*="onetrust"]', '[class*="usercentrics"]', '[class*="qc-cmp"]',
+                    '[id*="sp_message"]', '[class*="cmp-modal"]', '#onetrust-consent-sdk',
                     // Substack modals & subscription popups
                     '[class*="substack-modal"]', 'div.modal-wrapper', 'div.modal-table',
                     '[class*="subscribe-modal"]', '[class*="paywall-banner"]',
@@ -282,8 +362,10 @@ object PaywallBypassHelper {
                     '[class*="modal-overlay"]', '[class*="reader-popover"]',
                     '[class*="subscriber-only-banner"]', '[class*="subscribe-widget"]',
                     '[class*="pencraft"][role="dialog"]', 'div[class*="gate-container"]',
-                    // NBC News floating video players and modals
-                    '[class*="floating-video"]', '[class*="sticky-player"]', '[class*="mini-player"]'
+                    // Connatix and floating video players
+                    '[class*="connatix"]', '[id*="connatix"]', 'div[class*="cnx-"]',
+                    '[class*="vdo_inline"]', '[class*="jwplayer"]', '[class*="floating-player"]',
+                    '[class*="persistent-player"]', '[class*="floating-video"]', '[class*="sticky-player"]', '[class*="mini-player"]'
                 ];
                 paywallSelectors.forEach(function(sel) {
                     document.querySelectorAll(sel).forEach(function(el) {
@@ -429,122 +511,124 @@ object PaywallBypassHelper {
                     el.style.setProperty('position', 'static', 'important');
                 });
 
-                // 6. Boston Globe / WaPo Arc XP Fusion, NBC News (__NEXT_DATA__) & JSON-LD Hydration
-                // ONLY inject if visible article text is short (< 650 chars), stopping Politico duplication
+                // 6. Arc XP Fusion, Next.js (__NEXT_DATA__) & JSON-LD Structured DOM Hydration
+                // Always hydrate whenever recovered structured story text exceeds non-modal paragraph text by 250+ chars
                 try {
                     var articleEl = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
                     var visibleLen = (articleEl ? (articleEl.innerText || '') : '').trim().length;
 
-                    if (visibleLen < 650) {
-                        var recoveredParas = [];
+                    var recoveredParas = [];
 
-                        // 6a. Arc XP Fusion (Boston Globe, Washington Post, etc.)
-                        try {
-                            var fusionObj = null;
-                            if (window.Fusion && window.Fusion.globalContent) {
-                                fusionObj = window.Fusion.globalContent;
-                            } else {
-                                var fusionScript = document.getElementById('fusion-metadata') || document.querySelector('script[id*="fusion"]');
-                                if (fusionScript && fusionScript.textContent) {
-                                    var fMatch = fusionScript.textContent.match(/Fusion\.globalContent\s*=\\s*(\{.*?\}\);/);
-                                    if (fMatch) fusionObj = JSON.parse(fMatch[1]);
+                    // 6a. Arc XP Fusion (e.g. Boston Globe, Washington Post)
+                    try {
+                        var fusionObj = null;
+                        if (window.Fusion && window.Fusion.globalContent) {
+                            fusionObj = window.Fusion.globalContent;
+                        } else {
+                            var fusionScript = document.getElementById('fusion-metadata') || document.querySelector('script[id*="fusion"]');
+                            if (fusionScript && fusionScript.textContent) {
+                                var fMatch = fusionScript.textContent.match(/Fusion\.globalContent\s*=\\s*(\{.*?\}\);/);
+                                if (fMatch) fusionObj = JSON.parse(fMatch[1]);
+                            }
+                        }
+                        if (fusionObj) {
+                            function extractFusion(obj) {
+                                if (!obj || typeof obj !== 'object') return;
+                                if (Array.isArray(obj.content_elements)) {
+                                    obj.content_elements.forEach(function(item) {
+                                        if (!item) return;
+                                        var raw = item.content || item.text || '';
+                                        if (typeof raw === 'string' && raw.trim().length > 0) {
+                                            var clean = raw.replace(/<[^>]*>/g, '').trim();
+                                            if (clean.length > 0) recoveredParas.push(clean);
+                                        }
+                                    });
+                                }
+                                for (var fk in obj) {
+                                    if (obj.hasOwnProperty(fk) && typeof obj[fk] === 'object' && fk !== 'content_elements') {
+                                        extractFusion(obj[fk]);
+                                    }
                                 }
                             }
-                            if (fusionObj) {
-                                function extractFusion(obj) {
-                                    if (!obj || typeof obj !== 'object') return;
+                            extractFusion(fusionObj);
+                        }
+                    } catch(fe) {}
+
+                    // 6b. Next.js (__NEXT_DATA__)
+                    var nextDataEl = document.getElementById('__NEXT_DATA__');
+                    if (nextDataEl && nextDataEl.textContent) {
+                        try {
+                            var nextData = JSON.parse(nextDataEl.textContent);
+                            function findContentElements(obj) {
+                                if (!obj || typeof obj !== 'object') return;
+                                if (Array.isArray(obj)) {
+                                    for (var i = 0; i < obj.length; i++) findContentElements(obj[i]);
+                                } else {
                                     if (Array.isArray(obj.content_elements)) {
                                         obj.content_elements.forEach(function(item) {
-                                            if (!item) return;
-                                            var raw = item.content || item.text || '';
+                                            var raw = (item && (item.content || item.text)) || '';
                                             if (typeof raw === 'string' && raw.trim().length > 0) {
                                                 var clean = raw.replace(/<[^>]*>/g, '').trim();
                                                 if (clean.length > 0) recoveredParas.push(clean);
                                             }
                                         });
                                     }
-                                    for (var fk in obj) {
-                                        if (obj.hasOwnProperty(fk) && typeof obj[fk] === 'object' && fk !== 'content_elements') {
-                                            extractFusion(obj[fk]);
-                                        }
-                                    }
-                                }
-                                extractFusion(fusionObj);
-                            }
-                        } catch(fe) {}
-
-                        // 6b. Next.js (__NEXT_DATA__)
-                        var nextDataEl = document.getElementById('__NEXT_DATA__');
-                        if (nextDataEl && nextDataEl.textContent) {
-                            try {
-                                var nextData = JSON.parse(nextDataEl.textContent);
-                                function findContentElements(obj) {
-                                    if (!obj || typeof obj !== 'object') return;
-                                    if (Array.isArray(obj)) {
-                                        for (var i = 0; i < obj.length; i++) findContentElements(obj[i]);
-                                    } else {
-                                        if (Array.isArray(obj.content_elements)) {
-                                            obj.content_elements.forEach(function(item) {
-                                                var raw = (item && (item.content || item.text)) || '';
-                                                if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                    var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                                    if (clean.length > 0) recoveredParas.push(clean);
-                                                }
-                                            });
-                                        }
-                                        if (Array.isArray(obj.body)) {
-                                            obj.body.forEach(function(item) {
-                                                var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
-                                                if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                    var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                                    if (clean.length > 0) recoveredParas.push(clean);
-                                                }
-                                            });
-                                        }
-                                        for (var k in obj) {
-                                            if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
-                                                findContentElements(obj[k]);
+                                    if (Array.isArray(obj.body)) {
+                                        obj.body.forEach(function(item) {
+                                            var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
+                                            if (typeof raw === 'string' && raw.trim().length > 0) {
+                                                var clean = raw.replace(/<[^>]*>/g, '').trim();
+                                                if (clean.length > 0) recoveredParas.push(clean);
                                             }
+                                        });
+                                    }
+                                    for (var k in obj) {
+                                        if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
+                                            findContentElements(obj[k]);
                                         }
                                     }
                                 }
-                                findContentElements(nextData);
-                            } catch (ne) {}
-                        }
+                            }
+                            findContentElements(nextData);
+                        } catch (ne) {}
+                    }
 
-                        // 6c. JSON-LD articleBody
-                        var longestLdBody = '';
-                        var scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                        scripts.forEach(function(s) {
-                            try {
-                                var data = JSON.parse(s.textContent || '{}');
-                                var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
-                                items.forEach(function(item) {
-                                    if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestLdBody.length) {
-                                        longestLdBody = item.articleBody;
-                                    }
-                                });
-                            } catch (je) {}
-                        });
-
-                        var recoveredText = recoveredParas.join('\n\n').trim();
-                        var candidateParas = [];
-                        if (recoveredText.length >= visibleLen + 300 && recoveredParas.length > 0) {
-                            candidateParas = recoveredParas;
-                        } else if (longestLdBody.length >= visibleLen + 300) {
-                            candidateParas = longestLdBody.split(/\n+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
-                        }
-
-                        if (candidateParas.length > 0 && !document.getElementById('webvaultr-hydrated-content')) {
-                            var container = document.createElement('div');
-                            container.id = 'webvaultr-hydrated-content';
-                            container.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
-                            candidateParas.forEach(function(para) {
-                                var p = document.createElement('p');
-                                p.style.cssText = 'margin-bottom: 14px;';
-                                p.textContent = para;
-                                container.appendChild(p);
+                    // 6c. JSON-LD articleBody
+                    var longestLdBody = '';
+                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    scripts.forEach(function(s) {
+                        try {
+                            var data = JSON.parse(s.textContent || '{}');
+                            var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
+                            items.forEach(function(item) {
+                                if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestLdBody.length) {
+                                    longestLdBody = item.articleBody;
+                                }
                             });
+                        } catch (je) {}
+                    });
+
+                    var recoveredText = recoveredParas.join('\n\n').trim();
+                    var candidateParas = [];
+                    if (recoveredText.length >= visibleLen + 250 && recoveredParas.length > 0) {
+                        candidateParas = recoveredParas;
+                    } else if (longestLdBody.length >= visibleLen + 250) {
+                        candidateParas = longestLdBody.split(/\n+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+                    }
+
+                    if (candidateParas.length > 0 && !document.getElementById('webvaultr-hydrated-content')) {
+                        var container = document.createElement('div');
+                        container.id = 'webvaultr-hydrated-content';
+                        container.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
+                        candidateParas.forEach(function(para) {
+                            var p = document.createElement('p');
+                            p.style.cssText = 'margin-bottom: 14px;';
+                            p.textContent = para;
+                            container.appendChild(p);
+                        });
+                        articleEl.appendChild(container);
+                    }
+                } catch (e) {}
                             articleEl.appendChild(container);
                         }
                     }

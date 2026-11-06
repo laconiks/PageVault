@@ -7,6 +7,7 @@ import androidx.work.WorkerParameters
 import com.local.webvaultr.ai.LocalAiEdgeProcessor
 import com.local.webvaultr.data.local.AppDatabase
 import com.local.webvaultr.data.repository.ArchiveRepository
+import com.local.webvaultr.util.VaultCollectionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser
@@ -52,7 +53,10 @@ class RssFeedScraperWorker(
                     val matchesKeyword = keywords.isEmpty() || keywords.any { kw -> combinedText.contains(kw) }
 
                     if (matchesKeyword) {
-                        repository.captureAndIndexUrl(item.link)
+                        val captureRes = repository.captureAndIndexUrl(item.link)
+                        captureRes.getOrNull()?.let { page ->
+                            VaultCollectionManager.markAsRssArticle(appContext, page.uuid, sub.feedUrl)
+                        }
                         archivedCount++
                     }
                 }

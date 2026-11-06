@@ -165,7 +165,10 @@ class ExportAndShareHelper(private val context: Context) {
                 page.screenshotFilePath?.let { path ->
                     val file = File(path)
                     if (file.exists()) {
-                        val bitmap = BitmapFactory.decodeFile(path)
+                        val decodeOptions = BitmapFactory.Options().apply {
+                            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+                        }
+                        val bitmap = BitmapFactory.decodeFile(path, decodeOptions)
                         if (bitmap != null && bitmap.width > 0 && bitmap.height > 0) {
                             val scale = contentWidth.toFloat() / bitmap.width.toFloat()
                             var srcY = 0
@@ -223,7 +226,15 @@ class ExportAndShareHelper(private val context: Context) {
                                 t.startsWith("Image:", ignoreCase = true) ||
                                 t.startsWith("Subscribe", ignoreCase = true) ||
                                 t.equals("Loading...", ignoreCase = true) ||
-                                t.equals("Loading", ignoreCase = true)
+                                t.equals("Loading", ignoreCase = true) ||
+                                t.contains("We are getting your experience ready", ignoreCase = true) ||
+                                t.contains("FOR SUBSCRIBERS", ignoreCase = true) ||
+                                t.contains("SUBSCRIBER EXCLUSIVE", ignoreCase = true) ||
+                                t.contains("Two ways to read this article", ignoreCase = true) ||
+                                t.contains("Intro offer", ignoreCase = true) ||
+                                t.contains("Claim Offer", ignoreCase = true) ||
+                                t.contains("Terms of Use", ignoreCase = true) ||
+                                t.contains("Cookie Banner", ignoreCase = true)
                         }
                         .joinToString("\n") { line ->
                             if (line.trim().startsWith("####")) {
@@ -346,7 +357,14 @@ class ExportAndShareHelper(private val context: Context) {
                 .lines()
                 .filterNot { line ->
                     val t = line.trim()
-                    t.startsWith("####") || t.startsWith("#") || t.equals("Advertisement", true) || t.equals("Loading...", true)
+                    t.startsWith("####") || t.startsWith("#") ||
+                        t.equals("Advertisement", true) || t.equals("Loading...", true) ||
+                        t.contains("We are getting your experience ready", true) ||
+                        t.contains("FOR SUBSCRIBERS", true) ||
+                        t.contains("SUBSCRIBER EXCLUSIVE", true) ||
+                        t.contains("Two ways to read this article", true) ||
+                        t.contains("Intro offer", true) ||
+                        t.contains("Claim Offer", true)
                 }
                 .joinToString("\n")
                 .trim()
@@ -370,7 +388,26 @@ class ExportAndShareHelper(private val context: Context) {
         }
     }
 
-    fun shareFilesToDriveOrApps(files: List<File>, mimeType: String = "application/pdf") {
+    fun buildDiscordPreviewText(page: ArchivedPage): String {
+        val domain = page.siteName.ifBlank {
+            runCatching { android.net.Uri.parse(page.originalUrl).host?.removePrefix("www.") ?: "" }.getOrDefault("")
+        }
+        val domainSuffix = if (domain.isNotBlank()) " ($domain)" else ""
+        val summary = page.aiSummary.ifBlank { page.extractedTextSummary }
+            .lines()
+            .map { it.trim() }
+            .filterNot { it.isBlank() || it.startsWith("#") || it.startsWith("====") || it.startsWith("Site:") || it.startsWith("By:") }
+            .firstOrNull()?.take(280)?.trim().orEmpty()
+        val summaryBlock = if (summary.isNotBlank()) "> $summary\n" else ""
+        return "**${page.title}**$domainSuffix\n$summaryBlock${page.originalUrl}"
+    }
+
+    fun shareFilesToDriveOrApps(
+        files: List<File>,
+        mimeType: String = "application/pdf",
+        subject: String? = null,
+        previewText: String? = null
+    ) {
         if (files.isEmpty()) {
             DiagnosticLogHelper.log(TAG, "shareFilesToDriveOrApps called with empty files list")
             Toast.makeText(context, "No files to export", Toast.LENGTH_SHORT).show()
@@ -388,6 +425,12 @@ class ExportAndShareHelper(private val context: Context) {
                     putExtra(Intent.EXTRA_STREAM, uris.first())
                 } else {
                     putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                }
+                if (!subject.isNullOrBlank()) {
+                    putExtra(Intent.EXTRA_SUBJECT, subject)
+                }
+                if (!previewText.isNullOrBlank()) {
+                    putExtra(Intent.EXTRA_TEXT, previewText)
                 }
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }

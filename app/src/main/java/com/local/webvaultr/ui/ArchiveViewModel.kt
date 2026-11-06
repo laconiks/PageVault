@@ -22,6 +22,7 @@ import com.local.webvaultr.data.local.RssSubscription
 import com.local.webvaultr.data.repository.ArchiveRepository
 import com.local.webvaultr.ui.theme.ThemeMode
 import com.local.webvaultr.util.AppUiPreferences
+import com.local.webvaultr.util.VaultCollectionManager
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,6 +77,30 @@ class ArchiveViewModel(application: Application) : AndroidViewModel(application)
 
     val rssSubscriptions: StateFlow<List<RssSubscription>> = dao.observeRssSubscriptions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val movedArticles: StateFlow<Map<String, String>> = VaultCollectionManager.movedArticles
+    val rssArticles: StateFlow<Map<String, String>> = VaultCollectionManager.rssArticles
+
+    init {
+        VaultCollectionManager.init(application)
+    }
+
+    fun moveArticleToCollection(uuid: String, collectionName: String) {
+        VaultCollectionManager.moveArticleToCollection(getApplication(), uuid, collectionName)
+        _uiAlerts.tryEmit("Moved to '$collectionName'")
+    }
+
+    fun moveSelectedToCollection(collectionName: String) {
+        val count = _selectedUuids.value.size
+        VaultCollectionManager.moveArticlesToCollection(getApplication(), _selectedUuids.value, collectionName)
+        clearSelection()
+        _uiAlerts.tryEmit("Moved $count articles to '$collectionName'")
+    }
+
+    fun returnArticleToMainFeed(uuid: String) {
+        VaultCollectionManager.returnArticleToMainFeed(getApplication(), uuid)
+        _uiAlerts.tryEmit("Returned to Main Feed")
+    }
 
     val archivedPages: StateFlow<List<ArchivedPage>> = _searchQuery
         .debounce(200)

@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -196,7 +197,7 @@ fun MarkdownViewerDialog(
                     ) {
                         Text(
                             text = rawContent,
-                            style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp),
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -204,44 +205,69 @@ fun MarkdownViewerDialog(
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            clipboardManager.setText(AnnotatedString(rawContent))
+                            copied = true
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 12.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            if (copied) "Copied!" else "Copy Text",
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 15.sp),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            onShareMarkdown()
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 12.dp)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "Share .md",
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 15.sp),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 OutlinedButton(
                     onClick = {
                         AppUiPreferences.triggerHaptic(localView)
-                        clipboardManager.setText(AnnotatedString(rawContent))
-                        copied = true
-                    }
+                        onDismiss()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                    Text(
+                        "Close",
+                        style = MaterialTheme.typography.labelLarge.copy(fontSize = 15.sp),
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(if (copied) "Copied!" else "Copy Text")
-                }
-                Button(
-                    onClick = {
-                        AppUiPreferences.triggerHaptic(localView)
-                        onShareMarkdown()
-                    }
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Share .md")
                 }
             }
         },
-        dismissButton = {
-            TextButton(
-                onClick = {
-                    AppUiPreferences.triggerHaptic(localView)
-                    onDismiss()
-                }
-            ) {
-                Text("Close")
-            }
-        }
+        dismissButton = {}
     )
 }
 
@@ -471,6 +497,7 @@ fun VaultArticleCard(
     onExportMarkdown: (() -> Unit)? = null,
     onOpenMarkdown: ((ArchivedPage) -> Unit)? = null,
     onShareTxt: (() -> Unit)? = null,
+    onMoveToCollection: (() -> Unit)? = null,
     onRepull: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -1034,6 +1061,45 @@ fun VaultArticleCard(
                         }
                     }
 
+                    // 📁 Move to Collection Pill
+                    if (onMoveToCollection != null) {
+                        Surface(
+                            onClick = {
+                                AppUiPreferences.triggerHaptic(localView)
+                                onMoveToCollection()
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.DriveFileMove,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(
+                                        "📁 Move",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "To collection",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // 🔄 Pull v$nextVersion Pill
                     if (onRepull != null) {
                         val nextV = (revisions.maxOfOrNull { it.versionNumber } ?: page.versionNumber) + 1
@@ -1138,6 +1204,7 @@ fun VaultCompactRow(
     onExportMarkdown: (() -> Unit)? = null,
     onOpenMarkdown: ((ArchivedPage) -> Unit)? = null,
     onShareTxt: (() -> Unit)? = null,
+    onMoveToCollection: (() -> Unit)? = null,
     onDelete: () -> Unit
 ) {
     val localView = LocalView.current
@@ -1258,6 +1325,22 @@ fun VaultCompactRow(
                         modifier = Modifier.size(28.dp)
                     ) {
                         Icon(Icons.Default.Share, contentDescription = "Share .txt", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
+                    }
+                }
+                if (onMoveToCollection != null) {
+                    IconButton(
+                        onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            onMoveToCollection()
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.DriveFileMove,
+                            contentDescription = "Move to Collection",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                 }
                 IconButton(
@@ -1620,7 +1703,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About WebVaultr v0.8.4", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.8.5", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,

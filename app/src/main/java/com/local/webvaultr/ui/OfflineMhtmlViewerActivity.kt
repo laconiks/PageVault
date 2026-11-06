@@ -1,11 +1,17 @@
 package com.local.webvaultr.ui
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -14,20 +20,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
-import androidx.compose.material.icons.automirrored.filled.NavigateBefore
-import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Web
 import androidx.compose.material3.*
@@ -95,9 +100,9 @@ fun OfflineViewerScreen(
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
     var viewerMode by remember { mutableStateOf(ViewerMode.MHTML) }
+    var showMenu by remember { mutableStateOf(false) }
 
     var allPages by remember { mutableStateOf<List<ArchivedPage>>(emptyList()) }
-    var currentIndex by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -106,46 +111,73 @@ fun OfflineViewerScreen(
                 val list = dao.getAllPagesSync()
                 if (list.isNotEmpty()) {
                     allPages = list
-                    val idx = list.indexOfFirst {
-                        (initialUuid.isNotBlank() && it.uuid == initialUuid) ||
-                            (initialUrl.isNotBlank() && it.originalUrl.equals(initialUrl, ignoreCase = true)) ||
-                            it.title.equals(initialTitle, ignoreCase = true)
-                    }
-                    if (idx >= 0) currentIndex = idx
                 }
             }
         }
     }
 
-    val currentPage = allPages.getOrNull(currentIndex)
+    val pagerState = rememberPagerState(
+        initialPage = 0,
+        pageCount = { allPages.size.coerceAtLeast(1) }
+    )
+
+    LaunchedEffect(allPages) {
+        if (allPages.isNotEmpty()) {
+            val idx = allPages.indexOfFirst {
+                (initialUuid.isNotBlank() && it.uuid == initialUuid) ||
+                    (initialUrl.isNotBlank() && it.originalUrl.equals(initialUrl, ignoreCase = true)) ||
+                    it.title.equals(initialTitle, ignoreCase = true)
+            }
+            if (idx >= 0 && idx != pagerState.currentPage) {
+                pagerState.scrollToPage(idx)
+            }
+        }
+    }
+
+    val currentPage = allPages.getOrNull(pagerState.currentPage)
     val title = currentPage?.title ?: initialTitle
     val originalUrl = currentPage?.originalUrl ?: initialUrl
-    val mhtmlPath = currentPage?.mhtmlFilePath ?: initialMhtmlPath
     val screenshotPath = currentPage?.screenshotFilePath ?: initialScreenshotPath
-    val readerText = currentPage?.extractedTextSummary?.ifBlank { currentPage.aiSummary } ?: ""
 
-    fun saveQaSnapshot() {
+    fun saveQaSnapshot(targetScreenshotPath: String?) {
         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         runCatching {
             val qaDir = File(context.filesDir, "qa_snapshots").apply { mkdirs() }
             val snapFile = File(qaDir, "qa_snap_${System.currentTimeMillis()}.png")
 
             val activity = context as? Activity
-            val decorView = activity?.window?.decorView?.rootView
-            if (decorView != null && decorView.width > 0 && decorView.height > 0) {
-                val bmp = Bitmap.createBitmap(decorView.width, decorView.height, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bmp)
-                decorView.draw(canvas)
-                FileOutputStream(snapFile).use { out ->
-                    bmp.compress(Bitmap.CompressFormat.PNG, 95, out)
-                }
-                bmp.recycle()
-                Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
-            } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
-                File(screenshotPath).copyTo(snapFile, overwrite = true)
-                Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
+            val window = activity?.window
+            if (window != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val decorView = window.decorView
+                val width = decorView.width.coerceAtLeast(1)
+                val height = decorView.height.coerceAtLeast(1)
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                val location = IntArray(2)
+                decorView.getLocationInWindow(location)
+                val rect = Rect(
+                    location[0],
+                    location[1],
+                    location[0] + width,
+                    location[1] + height
+                )
+                PixelCopy.request(window, rect, bitmap, { copyResult ->
+                    if (copyResult == PixelCopy.SUCCESS) {
+                        runCatching {
+                            FileOutputStream(snapFile).use { out ->
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 95, out)
+                            }
+                        }
+                        bitmap.recycle()
+                        Handler(Looper.getMainLooper()).post {
+                            Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        bitmap.recycle()
+                        fallbackQaSnap(context, snapFile, targetScreenshotPath)
+                    }
+                }, Handler(Looper.getMainLooper()))
             } else {
-                Toast.makeText(context, "Unable to capture QA snap", Toast.LENGTH_SHORT).show()
+                fallbackQaSnap(context, snapFile, targetScreenshotPath)
             }
         }.onFailure { err ->
             Toast.makeText(context, "QA Snap error: ${err.message}", Toast.LENGTH_SHORT).show()
@@ -194,15 +226,6 @@ fun OfflineViewerScreen(
                     }
                 },
                 actions = {
-                    // 📸 QA Snap Button
-                    IconButton(onClick = { saveQaSnapshot() }) {
-                        Icon(
-                            imageVector = Icons.Default.CameraAlt,
-                            contentDescription = "Take QA Snapshot",
-                            tint = MaterialTheme.colorScheme.tertiary
-                        )
-                    }
-
                     // Toggle Clean Reader View
                     IconButton(
                         onClick = {
@@ -233,111 +256,77 @@ fun OfflineViewerScreen(
                         }
                     }
 
-                    if (originalUrl.isNotBlank()) {
-                        IconButton(
-                            onClick = {
-                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                runCatching {
-                                    val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(originalUrl)).apply {
-                                        setPackage("com.android.chrome")
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    try {
-                                        context.startActivity(chromeIntent)
-                                    } catch (_: Exception) {
-                                        context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, Uri.parse(originalUrl)).apply {
+                    // 3-Dot Overflow Menu
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More Options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("📸 Capture QA Snapshot") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    saveQaSnapshot(screenshotPath)
+                                }
+                            )
+                            if (originalUrl.isNotBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("🌐 Open Live Webpage") },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        runCatching {
+                                            val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(originalUrl)).apply {
+                                                setPackage("com.android.chrome")
                                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                             }
-                                        )
+                                            try {
+                                                context.startActivity(chromeIntent)
+                                            } catch (_: Exception) {
+                                                context.startActivity(
+                                                    Intent(Intent.ACTION_VIEW, Uri.parse(originalUrl)).apply {
+                                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                )
+                                            }
+                                        }
                                     }
-                                }
+                                )
                             }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.OpenInBrowser,
-                                contentDescription = "Open Live URL in Chrome",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
                         }
                     }
                 }
             )
-        },
-        bottomBar = {
-            if (allPages.size > 1) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 6.dp,
-                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        IconButton(
-                            onClick = {
-                                if (currentIndex > 0) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentIndex--
-                                }
-                            },
-                            enabled = currentIndex > 0
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.NavigateBefore, contentDescription = "Previous Article")
-                        }
-
-                        Text(
-                            text = "Article ${currentIndex + 1} of ${allPages.size}",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-
-                        IconButton(
-                            onClick = {
-                                if (currentIndex < allPages.size - 1) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentIndex++
-                                }
-                            },
-                            enabled = currentIndex < allPages.size - 1
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.NavigateNext, contentDescription = "Next Article")
-                        }
-                    }
-                }
-            }
         }
     ) { paddingValues ->
-        Box(
+        HorizontalPager(
+            state = pagerState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
-        ) {
+        ) { pageIndex ->
+            val page = allPages.getOrNull(pageIndex)
+            val pageTitle = page?.title ?: initialTitle
+            val pageMhtmlPath = page?.mhtmlFilePath ?: initialMhtmlPath
+            val pageScreenshotPath = page?.screenshotFilePath ?: initialScreenshotPath
+            val pageReaderText = page?.extractedTextSummary?.ifBlank { page.aiSummary } ?: ""
+
             when (viewerMode) {
                 ViewerMode.SCREENSHOT -> {
-                    if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
-                        ZoomableScreenshotCanvas(
-                            screenshotPath = screenshotPath,
-                            onSwipeLeft = {
-                                if (currentIndex < allPages.size - 1) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentIndex++
-                                }
-                            },
-                            onSwipeRight = {
-                                if (currentIndex > 0) {
-                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentIndex--
-                                }
-                            }
-                        )
+                    if (!pageScreenshotPath.isNullOrBlank() && File(pageScreenshotPath).exists()) {
+                        ZoomableScreenshotCanvas(screenshotPath = pageScreenshotPath)
                     } else {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("Screenshot file not available for this capture.")
@@ -346,30 +335,18 @@ fun OfflineViewerScreen(
                 }
                 ViewerMode.READER -> {
                     OfflineReaderExtractedView(
-                        title = title,
-                        fallbackText = readerText,
-                        onSwipeLeft = {
-                            if (currentIndex < allPages.size - 1) {
-                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                currentIndex++
-                            }
-                        },
-                        onSwipeRight = {
-                            if (currentIndex > 0) {
-                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                currentIndex--
-                            }
-                        }
+                        title = pageTitle,
+                        fallbackText = pageReaderText
                     )
                 }
                 ViewerMode.MHTML -> {
-                    if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
+                    if (!pageMhtmlPath.isNullOrBlank() && File(pageMhtmlPath).exists()) {
                         OfflineMhtmlWebView(
-                            key = mhtmlPath,
-                            mhtmlPath = mhtmlPath
+                            key = pageMhtmlPath,
+                            mhtmlPath = pageMhtmlPath
                         )
-                    } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
-                        ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+                    } else if (!pageScreenshotPath.isNullOrBlank() && File(pageScreenshotPath).exists()) {
+                        ZoomableScreenshotCanvas(screenshotPath = pageScreenshotPath)
                     } else {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("Snapshot file not found on disk.")
@@ -378,6 +355,41 @@ fun OfflineViewerScreen(
                 }
             }
         }
+    }
+}
+
+private fun fallbackQaSnap(context: Context, snapFile: File, screenshotPath: String?) {
+    val activity = context as? Activity
+    val decorView = activity?.window?.decorView?.rootView
+    if (decorView != null && decorView.width > 0 && decorView.height > 0) {
+        runCatching {
+            val bmp = Bitmap.createBitmap(decorView.width, decorView.height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            decorView.draw(canvas)
+            FileOutputStream(snapFile).use { out ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 95, out)
+            }
+            bmp.recycle()
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+    }
+
+    if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+        runCatching {
+            val srcFile = File(screenshotPath)
+            srcFile.copyTo(snapFile, overwrite = true)
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "📸 QA Snap saved: ${snapFile.name}", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+    }
+
+    Handler(Looper.getMainLooper()).post {
+        Toast.makeText(context, "Unable to capture QA snap", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -419,25 +431,11 @@ fun OfflineMhtmlWebView(
 @Composable
 fun OfflineReaderExtractedView(
     title: String,
-    fallbackText: String,
-    onSwipeLeft: () -> Unit = {},
-    onSwipeRight: () -> Unit = {}
+    fallbackText: String
 ) {
-    var dragAmount by remember { mutableFloatStateOf(0f) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, drag -> dragAmount += drag },
-                    onDragEnd = {
-                        if (dragAmount < -60f) onSwipeLeft()
-                        else if (dragAmount > 60f) onSwipeRight()
-                        dragAmount = 0f
-                    }
-                )
-            }
             .verticalScroll(rememberScrollState())
             .padding(18.dp)
     ) {
@@ -460,9 +458,7 @@ fun OfflineReaderExtractedView(
 
 @Composable
 fun ZoomableScreenshotCanvas(
-    screenshotPath: String,
-    onSwipeLeft: () -> Unit = {},
-    onSwipeRight: () -> Unit = {}
+    screenshotPath: String
 ) {
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp.dp
@@ -471,26 +467,12 @@ fun ZoomableScreenshotCanvas(
     val verticalScrollState = rememberScrollState()
     val horizontalScrollState = rememberScrollState()
 
-    var dragAmount by remember { mutableFloatStateOf(0f) }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White)
             .verticalScroll(verticalScrollState)
             .then(if (isZoomed) Modifier.horizontalScroll(horizontalScrollState) else Modifier)
-            .pointerInput(isZoomed) {
-                if (!isZoomed) {
-                    detectHorizontalDragGestures(
-                        onHorizontalDrag = { _, drag -> dragAmount += drag },
-                        onDragEnd = {
-                            if (dragAmount < -60f) onSwipeLeft()
-                            else if (dragAmount > 60f) onSwipeRight()
-                            dragAmount = 0f
-                        }
-                    )
-                }
-            }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = { isZoomed = !isZoomed }

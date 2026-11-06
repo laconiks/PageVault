@@ -13,6 +13,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -62,6 +64,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     val showEdgeOnboarding by viewModel.showEdgeOnboarding.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val selectedModelId by viewModel.selectedModelId.collectAsState()
+    val movedArticles by viewModel.movedArticles.collectAsState()
+    val rssArticles by viewModel.rssArticles.collectAsState()
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     val collapsedSites = remember { mutableStateMapOf<String, Boolean>() }
@@ -70,6 +74,8 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showRssDialog by remember { mutableStateOf(false) }
     var viewingMarkdownPage by remember { mutableStateOf<ArchivedPage?>(null) }
+    var movingPageUuid by remember { mutableStateOf<String?>(null) }
+    var showBatchMoveDialog by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -106,7 +112,24 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
         }
     }
 
-    val groupedChains = remember(articleChains) {
+    // Filter main feed to exclude moved articles and isolated RSS pulls
+    val mainFeedChains = remember(articleChains, movedArticles, rssArticles) {
+        articleChains.filter { chain ->
+            val uuid = chain.latestPage.uuid
+            !movedArticles.containsKey(uuid) && !rssArticles.containsKey(uuid)
+        }
+    }
+
+    val groupedMainFeedChains = remember(mainFeedChains) {
+        mainFeedChains.groupBy { chain ->
+            chain.latestPage.siteName.ifBlank {
+                runCatching { Uri.parse(chain.latestPage.originalUrl).host?.removePrefix("www.") ?: "Other Sites" }
+                    .getOrDefault("Other Sites")
+            }
+        }
+    }
+
+    val allGroupedChains = remember(articleChains) {
         articleChains.groupBy { chain ->
             chain.latestPage.siteName.ifBlank {
                 runCatching { Uri.parse(chain.latestPage.originalUrl).host?.removePrefix("www.") ?: "Other Sites" }
@@ -139,6 +162,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         }
                     },
                     actions = {
+                        IconButton(onClick = {
+                            AppUiPreferences.triggerHaptic(localView)
+                            showBatchMoveDialog = true
+                        }) {
+                            Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move Selected to Collection")
+                        }
                         IconButton(onClick = {
                             AppUiPreferences.triggerHaptic(localView)
                             val selectedPages = pages.filter { selectedUuids.contains(it.uuid) }
@@ -241,7 +270,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         AppUiPreferences.triggerHaptic(localView)
                         selectedTabIndex = 0
                     },
-                    text = { Text("📥 Main Feed", fontWeight = FontWeight.Bold) }
+                    text = { Text("📥 Main Feed (${mainFeedChains.size})", fontWeight = FontWeight.Bold) }
                 )
                 Tab(
                     selected = selectedTabIndex == 1,
@@ -249,7 +278,13 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                         AppUiPreferences.triggerHaptic(localView)
                         selectedTabIndex = 1
                     },
-                    text = { Text("🗂️ Collections", fontWeight = FontWeight.Bold) }
+                    text = {
+                        val totalCollectionsCount = movedArticles.size + rssArticles.size
+                        Text(
+                            text = if (totalCollectionsCount > 0) "🗂️ Collections ($totalCollectionsCount)" else "🗂️ Collections",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 )
             }
 
@@ -506,7 +541,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     Spacer(modifier = Modifier.height(10.dp))
 
                     // Articles Feed or Empty State
-                    if (articleChains.isEmpty()) {
+                    if (mainFeedChains.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -520,14 +555,14 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                 )
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
-                                    text = if (searchQuery.isNotBlank()) "No matching articles found for '$searchQuery'" else "Your WebVaultr is Empty",
+                                    text = if (searchQuery.isNotBlank()) "No matching articles found for '$searchQuery'" else "Your Main Feed is Empty",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     textAlign = TextAlign.Center
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = if (searchQuery.isNotBlank()) "Try searching different keywords, tags, or domain names" else "Insert a page above or use Chrome -> Share -> WebVaultr",
+                                    text = if (searchQuery.isNotBlank()) "Try searching different keywords, tags, or domain names" else "Insert a page above, share to WebVaultr, or check the Collections tab",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
@@ -541,7 +576,7 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                             contentPadding = PaddingValues(bottom = 24.dp)
                         ) {
                             if (isGroupedByWebsite) {
-                                groupedChains.forEach { (siteGroup, siteChains) ->
+                                groupedMainFeedChains.forEach { (siteGroup, siteChains) ->
                                     val isCollapsed = collapsedSites[siteGroup] == true
                                     stickyHeader {
                                         Surface(
@@ -608,7 +643,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                         scope.launch {
                                                             val pdf = exportHelper.generateSinglePagePdf(page)
                                                             if (pdf != null) {
-                                                                exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                                                exportHelper.shareFilesToDriveOrApps(
+                                                                    listOf(pdf),
+                                                                    "application/pdf",
+                                                                    subject = page.title,
+                                                                    previewText = exportHelper.buildDiscordPreviewText(page)
+                                                                )
                                                             } else {
                                                                 snackbarHostState.showSnackbar("Failed to generate PDF")
                                                             }
@@ -618,7 +658,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                         scope.launch {
                                                             val md = exportHelper.generateSinglePageMarkdown(page)
                                                             if (md != null) {
-                                                                exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                                                exportHelper.shareFilesToDriveOrApps(
+                                                                    listOf(md),
+                                                                    "text/markdown",
+                                                                    subject = page.title,
+                                                                    previewText = exportHelper.buildDiscordPreviewText(page)
+                                                                )
                                                             } else {
                                                                 snackbarHostState.showSnackbar("Failed to generate Markdown")
                                                             }
@@ -629,12 +674,18 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                         scope.launch {
                                                             val txt = exportHelper.generatePlainTextForDiscordAndIphone(page)
                                                             if (txt != null) {
-                                                                exportHelper.shareFilesToDriveOrApps(listOf(txt), "text/plain")
+                                                                exportHelper.shareFilesToDriveOrApps(
+                                                                    listOf(txt),
+                                                                    "text/plain",
+                                                                    subject = page.title,
+                                                                    previewText = exportHelper.buildDiscordPreviewText(page)
+                                                                )
                                                             } else {
                                                                 snackbarHostState.showSnackbar("Failed to generate plain text")
                                                             }
                                                         }
                                                     },
+                                                    onMoveToCollection = { movingPageUuid = page.uuid },
                                                     onDelete = { viewModel.deleteArchive(page) }
                                                 )
                                             } else {
@@ -662,7 +713,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                         scope.launch {
                                                             val pdf = exportHelper.generateSinglePagePdf(page)
                                                             if (pdf != null) {
-                                                                exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                                                exportHelper.shareFilesToDriveOrApps(
+                                                                    listOf(pdf),
+                                                                    "application/pdf",
+                                                                    subject = page.title,
+                                                                    previewText = exportHelper.buildDiscordPreviewText(page)
+                                                                )
                                                             } else {
                                                                 snackbarHostState.showSnackbar("Failed to generate PDF")
                                                             }
@@ -677,7 +733,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                         scope.launch {
                                                             val md = exportHelper.generateSinglePageMarkdown(page)
                                                             if (md != null) {
-                                                                exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                                                exportHelper.shareFilesToDriveOrApps(
+                                                                    listOf(md),
+                                                                    "text/markdown",
+                                                                    subject = page.title,
+                                                                    previewText = exportHelper.buildDiscordPreviewText(page)
+                                                                )
                                                             } else {
                                                                 snackbarHostState.showSnackbar("Failed to generate Markdown")
                                                             }
@@ -688,19 +749,25 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                         scope.launch {
                                                             val txt = exportHelper.generatePlainTextForDiscordAndIphone(page)
                                                             if (txt != null) {
-                                                                exportHelper.shareFilesToDriveOrApps(listOf(txt), "text/plain")
+                                                                exportHelper.shareFilesToDriveOrApps(
+                                                                    listOf(txt),
+                                                                    "text/plain",
+                                                                    subject = page.title,
+                                                                    previewText = exportHelper.buildDiscordPreviewText(page)
+                                                                )
                                                             } else {
                                                                 snackbarHostState.showSnackbar("Failed to generate plain text")
                                                             }
                                                         }
-                                                    }
+                                                    },
+                                                    onMoveToCollection = { movingPageUuid = page.uuid }
                                                 )
                                             }
                                         }
                                     }
                                 }
                             } else {
-                                items(articleChains, key = { it.latestPage.uuid }) { chain ->
+                                items(mainFeedChains, key = { it.latestPage.uuid }) { chain ->
                                     val page = chain.latestPage
                                     if (isOneSentenceView) {
                                         VaultCompactRow(
@@ -725,7 +792,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 scope.launch {
                                                     val pdf = exportHelper.generateSinglePagePdf(page)
                                                     if (pdf != null) {
-                                                        exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                                        exportHelper.shareFilesToDriveOrApps(
+                                                            listOf(pdf),
+                                                            "application/pdf",
+                                                            subject = page.title,
+                                                            previewText = exportHelper.buildDiscordPreviewText(page)
+                                                        )
                                                     } else {
                                                         snackbarHostState.showSnackbar("Failed to generate PDF")
                                                     }
@@ -735,7 +807,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 scope.launch {
                                                     val md = exportHelper.generateSinglePageMarkdown(page)
                                                     if (md != null) {
-                                                        exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                                        exportHelper.shareFilesToDriveOrApps(
+                                                            listOf(md),
+                                                            "text/markdown",
+                                                            subject = page.title,
+                                                            previewText = exportHelper.buildDiscordPreviewText(page)
+                                                        )
                                                     } else {
                                                         snackbarHostState.showSnackbar("Failed to generate Markdown")
                                                     }
@@ -746,12 +823,18 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 scope.launch {
                                                     val txt = exportHelper.generatePlainTextForDiscordAndIphone(page)
                                                     if (txt != null) {
-                                                        exportHelper.shareFilesToDriveOrApps(listOf(txt), "text/plain")
+                                                        exportHelper.shareFilesToDriveOrApps(
+                                                            listOf(txt),
+                                                            "text/plain",
+                                                            subject = page.title,
+                                                            previewText = exportHelper.buildDiscordPreviewText(page)
+                                                        )
                                                     } else {
                                                         snackbarHostState.showSnackbar("Failed to generate plain text")
                                                     }
                                                 }
                                             },
+                                            onMoveToCollection = { movingPageUuid = page.uuid },
                                             onDelete = { viewModel.deleteArchive(page) }
                                         )
                                     } else {
@@ -779,7 +862,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 scope.launch {
                                                     val pdf = exportHelper.generateSinglePagePdf(page)
                                                     if (pdf != null) {
-                                                        exportHelper.shareFilesToDriveOrApps(listOf(pdf), "application/pdf")
+                                                        exportHelper.shareFilesToDriveOrApps(
+                                                            listOf(pdf),
+                                                            "application/pdf",
+                                                            subject = page.title,
+                                                            previewText = exportHelper.buildDiscordPreviewText(page)
+                                                        )
                                                     } else {
                                                         snackbarHostState.showSnackbar("Failed to generate PDF")
                                                     }
@@ -794,7 +882,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 scope.launch {
                                                     val md = exportHelper.generateSinglePageMarkdown(page)
                                                     if (md != null) {
-                                                        exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                                                        exportHelper.shareFilesToDriveOrApps(
+                                                            listOf(md),
+                                                            "text/markdown",
+                                                            subject = page.title,
+                                                            previewText = exportHelper.buildDiscordPreviewText(page)
+                                                        )
                                                     } else {
                                                         snackbarHostState.showSnackbar("Failed to generate Markdown")
                                                     }
@@ -805,12 +898,18 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                                                 scope.launch {
                                                     val txt = exportHelper.generatePlainTextForDiscordAndIphone(page)
                                                     if (txt != null) {
-                                                        exportHelper.shareFilesToDriveOrApps(listOf(txt), "text/plain")
+                                                        exportHelper.shareFilesToDriveOrApps(
+                                                            listOf(txt),
+                                                            "text/plain",
+                                                            subject = page.title,
+                                                            previewText = exportHelper.buildDiscordPreviewText(page)
+                                                        )
                                                     } else {
                                                         snackbarHostState.showSnackbar("Failed to generate plain text")
                                                     }
                                                 }
-                                            }
+                                            },
+                                            onMoveToCollection = { movingPageUuid = page.uuid }
                                         )
                                     }
                                 }
@@ -822,8 +921,10 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 // 🗂️ COLLECTIONS SCREEN
                 CollectionsScreen(
                     pages = pages,
-                    groupedChains = groupedChains,
+                    groupedChains = allGroupedChains,
                     articleChains = articleChains,
+                    movedArticles = movedArticles,
+                    rssArticles = rssArticles,
                     onOpenPage = { page ->
                         val intent = Intent(context, OfflineMhtmlViewerActivity::class.java).apply {
                             putExtra("PAGE_UUID", page.uuid)
@@ -841,10 +942,50 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                     onFilterSite = { site ->
                         viewModel.updateSearchQuery(site)
                         selectedTabIndex = 0
+                    },
+                    onReturnToFeed = { uuid ->
+                        viewModel.returnArticleToMainFeed(uuid)
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Returned article to Main Feed")
+                        }
                     }
                 )
             }
         }
+    }
+
+    // Move to Collection Dialog (Single Item)
+    if (movingPageUuid != null) {
+        MoveToCollectionDialog(
+            title = "Move to Collection",
+            onSelectCollection = { collectionName ->
+                val uuid = movingPageUuid
+                if (uuid != null) {
+                    viewModel.moveArticleToCollection(uuid, collectionName)
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Moved article to '$collectionName'")
+                    }
+                }
+                movingPageUuid = null
+            },
+            onDismiss = { movingPageUuid = null }
+        )
+    }
+
+    // Move to Collection Dialog (Batch Selection)
+    if (showBatchMoveDialog) {
+        MoveToCollectionDialog(
+            title = "Move ${selectedUuids.size} Articles",
+            onSelectCollection = { collectionName ->
+                val count = selectedUuids.size
+                viewModel.moveSelectedToCollection(collectionName)
+                showBatchMoveDialog = false
+                scope.launch {
+                    snackbarHostState.showSnackbar("Moved $count articles to '$collectionName'")
+                }
+            },
+            onDismiss = { showBatchMoveDialog = false }
+        )
     }
 
     // In-App Markdown Viewer Dialog
@@ -856,7 +997,12 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
                 scope.launch {
                     val md = exportHelper.generateSinglePageMarkdown(page)
                     if (md != null) {
-                        exportHelper.shareFilesToDriveOrApps(listOf(md), "text/markdown")
+                        exportHelper.shareFilesToDriveOrApps(
+                            listOf(md),
+                            "text/markdown",
+                            subject = page.title,
+                            previewText = exportHelper.buildDiscordPreviewText(page)
+                        )
                     } else {
                         snackbarHostState.showSnackbar("Failed to generate Markdown")
                     }
@@ -902,13 +1048,90 @@ fun ArchiveDashboardScreen(viewModel: ArchiveViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun MoveToCollectionDialog(
+    title: String,
+    onSelectCollection: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var customName by remember { mutableStateOf("") }
+    val defaultCollections = listOf("Read Later", "Research", "Favorites", "Archive")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.DriveFileMove,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(title, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "Choose a collection to organize these articles. Moved items stay safe in Collections and remain out of your Main Feed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    defaultCollections.forEach { col ->
+                        SuggestionChip(
+                            onClick = { onSelectCollection(col) },
+                            label = { Text(col, fontWeight = FontWeight.SemiBold) }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = customName,
+                    onValueChange = { customName = it },
+                    placeholder = { Text("Or enter custom collection name...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (customName.isNotBlank()) onSelectCollection(customName.trim())
+                },
+                enabled = customName.isNotBlank()
+            ) {
+                Text("Move")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
 /**
  * 🗂️ Collections Screen
  * Organizes preserved articles into:
  * 1. Summary stats
- * 2. 🌐 Publication Drawers
- * 3. 🏷️ Topic Tag Stacks
- * 4. 📦 Multi-Version Revision Stacks
+ * 2. 📁 Custom User Collections (with Return to Feed action)
+ * 3. 📡 Isolated RSS Feeds (with Return to Feed action)
+ * 4. 🌐 Publication Drawers
+ * 5. 🏷️ Topic Tag Stacks
+ * 6. 📦 Multi-Version Revision Stacks
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -916,9 +1139,12 @@ fun CollectionsScreen(
     pages: List<ArchivedPage>,
     groupedChains: Map<String, List<ArticleChain>>,
     articleChains: List<ArticleChain>,
+    movedArticles: Map<String, String>,
+    rssArticles: Map<String, String>,
     onOpenPage: (ArchivedPage) -> Unit,
     onSelectTag: (String) -> Unit,
-    onFilterSite: (String) -> Unit
+    onFilterSite: (String) -> Unit,
+    onReturnToFeed: (String) -> Unit
 ) {
     val localView = LocalView.current
     val scrollState = rememberScrollState()
@@ -934,6 +1160,22 @@ fun CollectionsScreen(
         articleChains.filter { it.revisions.size > 1 }
     }
     val collapsedDrawers = remember { mutableStateMapOf<String, Boolean>() }
+
+    // Group custom collections
+    val customCollections = remember(pages, movedArticles) {
+        val map = mutableMapOf<String, MutableList<ArchivedPage>>()
+        movedArticles.forEach { (uuid, collectionName) ->
+            pages.find { it.uuid == uuid }?.let { page ->
+                map.getOrPut(collectionName) { mutableListOf() }.add(page)
+            }
+        }
+        map
+    }
+
+    // List of isolated RSS feed items
+    val isolatedRssPages = remember(pages, rssArticles) {
+        pages.filter { rssArticles.containsKey(it.uuid) }
+    }
 
     Column(
         modifier = Modifier
@@ -958,20 +1200,266 @@ fun CollectionsScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("${pages.size}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
-                    Text("Saved Pages", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Total Saved", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${groupedChains.size}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.secondary)
-                    Text("Publications", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${customCollections.size}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.secondary)
+                    Text("Collections", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${allTags.size}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.tertiary)
-                    Text("Topic Tags", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${isolatedRssPages.size}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.tertiary)
+                    Text("RSS Ingests", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
-        // Section 1: 🌐 Publication Drawers
+        // Section 1: 📁 Custom User Collections
+        if (customCollections.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "📁 Custom Collections",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Articles moved from your main feed for focused reference.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                customCollections.forEach { (colName, colPages) ->
+                    val isColOpen = collapsedDrawers["col_$colName"] != false // default expanded
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 2.dp,
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        AppUiPreferences.triggerHaptic(localView)
+                                        collapsedDrawers["col_$colName"] = !isColOpen
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Icon(
+                                        imageVector = if (isColOpen) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.Folder,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        colName,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                ) {
+                                    Text(
+                                        "${colPages.size}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+
+                            if (isColOpen) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    colPages.forEach { page ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    AppUiPreferences.triggerHaptic(localView)
+                                                    onOpenPage(page)
+                                                }
+                                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("•", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                page.title,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            IconButton(
+                                                onClick = {
+                                                    AppUiPreferences.triggerHaptic(localView)
+                                                    onReturnToFeed(page.uuid)
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Filled.Undo,
+                                                    contentDescription = "Return to Main Feed",
+                                                    tint = MaterialTheme.colorScheme.secondary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 2: 📡 Isolated RSS Feeds
+        if (isolatedRssPages.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "📡 RSS Ingests",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Articles captured by background keyword scrapers. Kept out of main feed until approved.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                val isRssOpen = collapsedDrawers["rss_feed_drawer"] != false
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    AppUiPreferences.triggerHaptic(localView)
+                                    collapsedDrawers["rss_feed_drawer"] = !isRssOpen
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(
+                                    imageVector = if (isRssOpen) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(
+                                    imageVector = Icons.Default.RssFeed,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Background RSS Queue",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)
+                            ) {
+                                Text(
+                                    "${isolatedRssPages.size}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (isRssOpen) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                isolatedRssPages.forEach { page ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                AppUiPreferences.triggerHaptic(localView)
+                                                onOpenPage(page)
+                                            }
+                                            .padding(vertical = 4.dp, horizontal = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("•", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            page.title,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        IconButton(
+                                            onClick = {
+                                                AppUiPreferences.triggerHaptic(localView)
+                                                onReturnToFeed(page.uuid)
+                                            },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.Undo,
+                                                contentDescription = "Move to Main Feed",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section 3: 🌐 Publication Drawers
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 "🌐 Publication Drawers",
@@ -1078,7 +1566,7 @@ fun CollectionsScreen(
             }
         }
 
-        // Section 2: 🏷️ Topic Tag Stacks
+        // Section 4: 🏷️ Topic Tag Stacks
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 "🏷️ Topic Tag Stacks",
@@ -1139,7 +1627,7 @@ fun CollectionsScreen(
             }
         }
 
-        // Section 3: 📦 Multi-Version Revision Stacks
+        // Section 5: 📦 Multi-Version Revision Stacks
         if (multiVersionChains.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(

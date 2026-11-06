@@ -335,3 +335,71 @@ object SiteCredentialManager {
             .edit().putString(KEY_PAYLOAD, encrypted).apply()
     }
 }
+
+object VaultCollectionManager {
+    private const val PREFS_NAME = "webvaultr_collections_prefs"
+    private const val KEY_MOVED_MAP = "moved_to_collection_json"
+    private const val KEY_RSS_SET = "rss_article_uuids_json"
+
+    private val _movedArticles = MutableStateFlow<Map<String, String>>(emptyMap())
+    val movedArticles: StateFlow<Map<String, String>> = _movedArticles.asStateFlow()
+
+    private val _rssArticles = MutableStateFlow<Map<String, String>>(emptyMap())
+    val rssArticles: StateFlow<Map<String, String>> = _rssArticles.asStateFlow()
+
+    fun init(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        _movedArticles.value = parseJsonMap(prefs.getString(KEY_MOVED_MAP, "{}") ?: "{}")
+        _rssArticles.value = parseJsonMap(prefs.getString(KEY_RSS_SET, "{}") ?: "{}")
+    }
+
+    fun moveArticleToCollection(context: Context, uuid: String, collectionName: String) {
+        val cleanName = collectionName.trim().ifBlank { "Saved Collection" }
+        val updated = _movedArticles.value.toMutableMap().apply { put(uuid, cleanName) }
+        _movedArticles.value = updated
+        saveJsonMap(context, KEY_MOVED_MAP, updated)
+    }
+
+    fun moveArticlesToCollection(context: Context, uuids: Collection<String>, collectionName: String) {
+        val cleanName = collectionName.trim().ifBlank { "Saved Collection" }
+        val updated = _movedArticles.value.toMutableMap()
+        uuids.forEach { updated[it] = cleanName }
+        _movedArticles.value = updated
+        saveJsonMap(context, KEY_MOVED_MAP, updated)
+    }
+
+    fun returnArticleToMainFeed(context: Context, uuid: String) {
+        val updated = _movedArticles.value.toMutableMap().apply { remove(uuid) }
+        _movedArticles.value = updated
+        saveJsonMap(context, KEY_MOVED_MAP, updated)
+        val updatedRss = _rssArticles.value.toMutableMap().apply { remove(uuid) }
+        _rssArticles.value = updatedRss
+        saveJsonMap(context, KEY_RSS_SET, updatedRss)
+    }
+
+    fun markAsRssArticle(context: Context, uuid: String, feedTitle: String) {
+        val updated = _rssArticles.value.toMutableMap().apply {
+            put(uuid, feedTitle.trim().ifBlank { "RSS Feed" })
+        }
+        _rssArticles.value = updated
+        saveJsonMap(context, KEY_RSS_SET, updated)
+    }
+
+    private fun parseJsonMap(raw: String): Map<String, String> = runCatching {
+        val obj = JSONObject(raw)
+        buildMap {
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                put(k, obj.optString(k, "Saved Collection"))
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun saveJsonMap(context: Context, key: String, map: Map<String, String>) {
+        val obj = JSONObject()
+        map.forEach { (k, v) -> obj.put(k, v) }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(key, obj.toString()).apply()
+    }
+}
