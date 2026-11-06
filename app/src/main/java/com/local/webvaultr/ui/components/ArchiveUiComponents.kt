@@ -1703,7 +1703,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About WebVaultr v0.8.5", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.8.5.1", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,

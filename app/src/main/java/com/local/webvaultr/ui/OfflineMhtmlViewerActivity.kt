@@ -20,15 +20,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Image
@@ -103,6 +104,8 @@ fun OfflineViewerScreen(
     var showMenu by remember { mutableStateOf(false) }
 
     var allPages by remember { mutableStateOf<List<ArchivedPage>>(emptyList()) }
+    var currentIndex by remember { mutableIntStateOf(0) }
+    var topBarDragAmount by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -111,33 +114,25 @@ fun OfflineViewerScreen(
                 val list = dao.getAllPagesSync()
                 if (list.isNotEmpty()) {
                     allPages = list
+                    val idx = list.indexOfFirst {
+                        (initialUuid.isNotBlank() && it.uuid == initialUuid) ||
+                            (initialUrl.isNotBlank() && it.originalUrl.equals(initialUrl, ignoreCase = true)) ||
+                            it.title.equals(initialTitle, ignoreCase = true)
+                    }
+                    if (idx >= 0) {
+                        currentIndex = idx
+                    }
                 }
             }
         }
     }
 
-    val pagerState = rememberPagerState(
-        initialPage = 0,
-        pageCount = { allPages.size.coerceAtLeast(1) }
-    )
-
-    LaunchedEffect(allPages) {
-        if (allPages.isNotEmpty()) {
-            val idx = allPages.indexOfFirst {
-                (initialUuid.isNotBlank() && it.uuid == initialUuid) ||
-                    (initialUrl.isNotBlank() && it.originalUrl.equals(initialUrl, ignoreCase = true)) ||
-                    it.title.equals(initialTitle, ignoreCase = true)
-            }
-            if (idx >= 0 && idx != pagerState.currentPage) {
-                pagerState.scrollToPage(idx)
-            }
-        }
-    }
-
-    val currentPage = allPages.getOrNull(pagerState.currentPage)
+    val currentPage = allPages.getOrNull(currentIndex)
     val title = currentPage?.title ?: initialTitle
     val originalUrl = currentPage?.originalUrl ?: initialUrl
+    val mhtmlPath = currentPage?.mhtmlFilePath ?: initialMhtmlPath
     val screenshotPath = currentPage?.screenshotFilePath ?: initialScreenshotPath
+    val readerText = currentPage?.extractedTextSummary?.ifBlank { currentPage.aiSummary } ?: ""
 
     fun saveQaSnapshot(targetScreenshotPath: String?) {
         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -192,6 +187,32 @@ fun OfflineViewerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                modifier = Modifier.pointerInput(allPages.size, currentIndex) {
+                    if (allPages.size > 1) {
+                        detectHorizontalDragGestures(
+                            onHorizontalDrag = { _, drag ->
+                                topBarDragAmount += drag
+                            },
+                            onDragEnd = {
+                                if (topBarDragAmount < -50f) {
+                                    if (currentIndex < allPages.size - 1) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        currentIndex++
+                                    }
+                                } else if (topBarDragAmount > 50f) {
+                                    if (currentIndex > 0) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        currentIndex--
+                                    }
+                                }
+                                topBarDragAmount = 0f
+                            },
+                            onDragCancel = {
+                                topBarDragAmount = 0f
+                            }
+                        )
+                    }
+                },
                 title = {
                     Column {
                         Text(
@@ -201,11 +222,16 @@ fun OfflineViewerScreen(
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
+                        val modeLabel = when (viewerMode) {
+                            ViewerMode.MHTML -> "Offline MHTML Archive"
+                            ViewerMode.SCREENSHOT -> "Full-Page Vertical Screenshot (Scroll & Zoom)"
+                            ViewerMode.READER -> "Clean Unblocked Reader View"
+                        }
                         Text(
-                            text = when (viewerMode) {
-                                ViewerMode.MHTML -> "Offline MHTML Archive"
-                                ViewerMode.SCREENSHOT -> "Full-Page Vertical Screenshot (Scroll & Zoom)"
-                                ViewerMode.READER -> "Clean Unblocked Reader View"
+                            text = if (allPages.size > 1) {
+                                "${currentIndex + 1} of ${allPages.size} • $modeLabel"
+                            } else {
+                                modeLabel
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
@@ -226,6 +252,43 @@ fun OfflineViewerScreen(
                     }
                 },
                 actions = {
+                    // Previous Article Button
+                    if (allPages.size > 1) {
+                        IconButton(
+                            onClick = {
+                                if (currentIndex > 0) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex--
+                                }
+                            },
+                            enabled = currentIndex > 0,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                contentDescription = "Previous Article",
+                                tint = if (currentIndex > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                if (currentIndex < allPages.size - 1) {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    currentIndex++
+                                }
+                            },
+                            enabled = currentIndex < allPages.size - 1,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = "Next Article",
+                                tint = if (currentIndex < allPages.size - 1) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+
                     // Toggle Clean Reader View
                     IconButton(
                         onClick = {
@@ -310,46 +373,42 @@ fun OfflineViewerScreen(
             )
         }
     ) { paddingValues ->
-        HorizontalPager(
-            state = pagerState,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
-        ) { pageIndex ->
-            val page = allPages.getOrNull(pageIndex)
-            val pageTitle = page?.title ?: initialTitle
-            val pageMhtmlPath = page?.mhtmlFilePath ?: initialMhtmlPath
-            val pageScreenshotPath = page?.screenshotFilePath ?: initialScreenshotPath
-            val pageReaderText = page?.extractedTextSummary?.ifBlank { page.aiSummary } ?: ""
-
-            when (viewerMode) {
-                ViewerMode.SCREENSHOT -> {
-                    if (!pageScreenshotPath.isNullOrBlank() && File(pageScreenshotPath).exists()) {
-                        ZoomableScreenshotCanvas(screenshotPath = pageScreenshotPath)
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("Screenshot file not available for this capture.")
+        ) {
+            val stableKey = currentPage?.uuid ?: mhtmlPath ?: screenshotPath ?: "viewer_surface"
+            key(stableKey) {
+                when (viewerMode) {
+                    ViewerMode.SCREENSHOT -> {
+                        if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+                            ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("Screenshot file not available for this capture.")
+                            }
                         }
                     }
-                }
-                ViewerMode.READER -> {
-                    OfflineReaderExtractedView(
-                        title = pageTitle,
-                        fallbackText = pageReaderText
-                    )
-                }
-                ViewerMode.MHTML -> {
-                    if (!pageMhtmlPath.isNullOrBlank() && File(pageMhtmlPath).exists()) {
-                        OfflineMhtmlWebView(
-                            key = pageMhtmlPath,
-                            mhtmlPath = pageMhtmlPath
+                    ViewerMode.READER -> {
+                        OfflineReaderExtractedView(
+                            title = title,
+                            fallbackText = readerText
                         )
-                    } else if (!pageScreenshotPath.isNullOrBlank() && File(pageScreenshotPath).exists()) {
-                        ZoomableScreenshotCanvas(screenshotPath = pageScreenshotPath)
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("Snapshot file not found on disk.")
+                    }
+                    ViewerMode.MHTML -> {
+                        if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
+                            OfflineMhtmlWebView(
+                                key = stableKey,
+                                mhtmlPath = mhtmlPath
+                            )
+                        } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+                            ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("Snapshot file not found on disk.")
+                            }
                         }
                     }
                 }
@@ -421,7 +480,21 @@ fun OfflineMhtmlWebView(
                             request: WebResourceRequest?
                         ): Boolean = true
                     }
-                    loadUrl(Uri.fromFile(File(mhtmlPath)).toString())
+                    val file = File(mhtmlPath)
+                    val headerSnippet = runCatching {
+                        file.bufferedReader().use { reader ->
+                            val buf = CharArray(256)
+                            val read = reader.read(buf)
+                            if (read > 0) String(buf, 0, read).trim().lowercase() else ""
+                        }
+                    }.getOrDefault("")
+
+                    if (headerSnippet.startsWith("<!doctype") || headerSnippet.startsWith("<html") || headerSnippet.startsWith("<div")) {
+                        val fullHtml = runCatching { file.readText() }.getOrDefault("")
+                        loadDataWithBaseURL(null, fullHtml, "text/html", "UTF-8", null)
+                    } else {
+                        loadUrl(Uri.fromFile(file).toString())
+                    }
                 }
             }
         )

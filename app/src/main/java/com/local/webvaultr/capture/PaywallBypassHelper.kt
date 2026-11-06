@@ -83,6 +83,30 @@ object PaywallBypassHelper {
     }
 
     /**
+     * Detects if a paragraph consists of character-reversed obfuscated words
+     * (e.g. "saw elbarenluv rotciv... ot eht").
+     */
+    fun isReversedWordParagraph(paragraph: String): Boolean {
+        val words = Regex("\\b[a-zA-Z]{2,}\\b").findAll(paragraph).map { it.value.lowercase() }.toList()
+        if (words.size < 6) return false
+        // Common English stopwords spelled backwards ("the"->"eht", "and"->"dna", "from"->"morf", "his"->"sih", "but"->"tub", "with"->"htiw", "they"->"yeht", "were"->"erew", "that"->"taht")
+        val reversedStopwords = setOf("eht", "dna", "morf", "sih", "tub", "htiw", "yeht", "erew", "taht", "rof", "tnebmucni", "citarcomed", "nacilbuper")
+        val hits = words.count { it in reversedStopwords }
+        return hits >= 3 || (hits.toFloat() / words.size.toFloat()) >= 0.12f
+    }
+
+    /**
+     * Filters out reversed-word obfuscated paragraphs from text corpus.
+     */
+    fun stripReversedWordGibberish(input: String): String {
+        if (input.isBlank()) return input
+        return input.split(Regex("\n{2,}"))
+            .filterNot { isReversedWordParagraph(it) }
+            .joinToString("\n\n")
+            .trim()
+    }
+
+    /**
      * Fetches unblocked clean article text via Jina Reader fallback (r.jina.ai) for server-enforced paywalls.
      */
     suspend fun fetchCleanReaderText(targetUrl: String): String? = withContext(Dispatchers.IO) {
@@ -104,13 +128,59 @@ object PaywallBypassHelper {
             }
             val responseCode = connection.responseCode
             if (responseCode == HttpURLConnection.HTTP_OK) {
-                val body = connection.inputStream.bufferedReader().use { it.readText() }
-                if (body.length > 400) {
-                    DiagnosticLogHelper.log(TAG, "Successfully fetched clean reader text (${body.length} chars)")
-                    body
-                } else {
-                    DiagnosticLogHelper.log(TAG, "Jina reader text too short (${body.length} chars)")
+                val raw = connection.inputStream.bufferedReader().use { it.readText() }
+                val lowerRaw = raw.lowercase()
+                if (lowerRaw.contains("performing security verification") ||
+                    lowerRaw.contains("warning: this page maybe requiring captcha") ||
+                    lowerRaw.contains("verify you are human") ||
+                    lowerRaw.contains("select a city") ||
+                    lowerRaw.contains("access denied") ||
+                    lowerRaw.contains("attention required! | cloudflare") ||
+                    lowerRaw.contains("just a moment...")
+                ) {
+                    DiagnosticLogHelper.log(TAG, "Reader fallback contained challenge/captcha - rejecting")
                     null
+                } else {
+                    val cleanedLines = raw.lines()
+                        .filterNot { line ->
+                            val trimmed = line.trim()
+                            val lower = trimmed.lowercase()
+                            trimmed.startsWith("Title:", ignoreCase = true) ||
+                                trimmed.startsWith("URL Source:", ignoreCase = true) ||
+                                trimmed.startsWith("Published Time:", ignoreCase = true) ||
+                                trimmed.startsWith("Markdown Content:", ignoreCase = true) ||
+                                trimmed.startsWith("* [") ||
+                                trimmed.startsWith("- [") ||
+                                trimmed.startsWith("+ [") ||
+                                lower.startsWith("[skip to") ||
+                                lower.contains("bgmenu_") ||
+                                lower.contains("select a city") ||
+                                (trimmed.startsWith("[") && trimmed.endsWith(")"))
+                        }
+                        .map { line ->
+                            line.replace(Regex("\\[([^]]+)\\]\\([^)]+\\)"), "$1").trim()
+                        }
+                        .filter { line ->
+                            if (line.isBlank()) return@filter false
+                            if (line.startsWith("#")) return@filter true
+                            if (line.length >= 45) {
+                                val lastChar = line.last()
+                                lastChar == '.' || lastChar == '"' || lastChar == '”' || lastChar == '?' || lastChar == '!' || line.contains(". ")
+                            } else {
+                                false
+                            }
+                        }
+                        .joinToString("\n\n")
+                        .trim()
+
+                    val filteredText = stripReversedWordGibberish(cleanedLines)
+                    if (filteredText.length > 400) {
+                        DiagnosticLogHelper.log(TAG, "Successfully fetched clean reader text (${filteredText.length} chars)")
+                        filteredText
+                    } else {
+                        DiagnosticLogHelper.log(TAG, "Reader text too short after filtering (${filteredText.length} chars)")
+                        null
+                    }
                 }
             } else {
                 DiagnosticLogHelper.log(TAG, "Jina reader fallback returned HTTP $responseCode")
@@ -181,7 +251,7 @@ object PaywallBypassHelper {
 
     /**
      * Injects clean formatted reader HTML into the WebView body when extracted DOM text is paywalled or blank (< 500 chars),
-     * so both the MHTML archive and full-height screenshot display the complete formatted article.
+     * so both the MHTML archive and full-height screenshot display the complete formatted article without wiping masthead/headers.
      */
     fun injectCleanReaderFallbackIntoWebView(webView: WebView, cleanText: String, title: String) {
         val escapedTitle = JSONObject.quote(title)
@@ -192,15 +262,33 @@ object PaywallBypassHelper {
                     var t = $escapedTitle;
                     var b = $escapedBody;
                     var paras = b.split(/\n+/).map(function(p) { return p.trim(); }).filter(function(p) { return p.length > 0; });
-                    var html = '<div style="max-width: 720px; margin: 0 auto; padding: 24px 16px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Georgia, serif; line-height: 1.65; color: #111; background: #fff;">';
-                    if (t) html += '<h1 style="font-size: 26px; line-height: 1.25; margin-bottom: 20px; font-weight: 700;">' + t + '</h1>';
+                    var target = document.querySelector('article') ||
+                                 document.querySelector('main') ||
+                                 document.querySelector('#article-body') ||
+                                 document.querySelector('.story-text') ||
+                                 document.querySelector('[role="main"]');
+
+                    var container = document.createElement('div');
+                    container.id = 'webvaultr-fallback-body';
+                    container.style.cssText = 'max-width: 760px; margin: 20px auto; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, Roboto, Georgia, serif; font-size: 18px; line-height: 1.65; color: #111;';
+
                     paras.forEach(function(p) {
-                        html += '<p style="font-size: 17px; margin-bottom: 16px;">' + p + '</p>';
+                        var pEl = document.createElement('p');
+                        pEl.style.cssText = 'margin-bottom: 16px;';
+                        pEl.textContent = p;
+                        container.appendChild(pEl);
                     });
-                    html += '</div>';
-                    document.body.innerHTML = html;
-                    document.body.style.background = '#ffffff';
-                    document.documentElement.style.background = '#ffffff';
+
+                    if (target) {
+                        target.appendChild(container);
+                    } else {
+                        var h1 = document.querySelector('h1');
+                        if (h1 && h1.parentNode) {
+                            h1.parentNode.insertBefore(container, h1.nextSibling);
+                        } else {
+                            document.body.appendChild(container);
+                        }
+                    }
                     window.scrollTo(0, 0);
                 } catch(e) {}
             })();
@@ -209,94 +297,11 @@ object PaywallBypassHelper {
     }
 
     /**
-     * Freezes CSS animations, eager-loads lazy images, removes blur filters,
-     * materializes CSSOM stylesheet rules, and stabilizes the DOM before saving MHTML.
+     * Ultra-lightweight DOM freeze before MHTML save to ensure native saveWebArchive completes rapidly without renderer lockup.
      */
+    @Suppress("UNUSED_PARAMETER")
     fun freezeDomBeforeMhtmlSave(webView: WebView, onComplete: () -> Unit) {
-        val js = """
-            (function() {
-                try {
-                    // 1. Remove animation & blur filters
-                    var s = document.createElement('style');
-                    s.textContent = '* { animation: none !important; transition: none !important; } [style*="blur"], .blur, [class*="blur"] { filter: none !important; -webkit-filter: none !important; }';
-                    (document.head || document.documentElement).appendChild(s);
-
-                    // 2. Unscramble ROT-1 text nodes in-DOM if detected
-                    try {
-                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                        var node;
-                        while(node = walker.nextNode()) {
-                            var val = node.nodeValue;
-                            if (val && val.length > 25 && /^[a-zA-Z\s.,'"!?]+$/.test(val)) {
-                                var sample = val.trim().split(/\s+/).slice(0, 5);
-                                var rotHits = 0;
-                                for (var si = 0; si < sample.length; si++) {
-                                    var w = sample[si].toLowerCase();
-                                    if (w === "uif" || w === "boe" || w === "up" || w === "jo" || w === "pg") rotHits++;
-                                }
-                                if (rotHits >= 2) {
-                                    var decoded = '';
-                                    for (var ci = 0; ci < val.length; ci++) {
-                                        var code = val.charCodeAt(ci);
-                                        if (code >= 66 && code <= 90) decoded += String.fromCharCode(code - 1);
-                                        else if (code === 65) decoded += 'Z';
-                                        else if (code >= 98 && code <= 122) decoded += String.fromCharCode(code - 1);
-                                        else if (code === 97) decoded += 'z';
-                                        else decoded += val.charAt(ci);
-                                    }
-                                    node.nodeValue = decoded;
-                                }
-                            }
-                        }
-                    } catch(re) {}
-
-                    // 3. Eager-load lazy images
-                    document.querySelectorAll('img').forEach(function(img) {
-                        var dSrc = img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src') || img.getAttribute('data-srcset');
-                        if (dSrc && !img.src) img.src = dSrc;
-                        var dSrcset = img.getAttribute('data-srcset');
-                        if (dSrcset && !img.srcset) img.srcset = dSrcset;
-                        img.removeAttribute('loading');
-                    });
-                    document.querySelectorAll('noscript').forEach(function(ns) {
-                        var text = ns.textContent || '';
-                        if (text.indexOf('<img') !== -1) {
-                            var div = document.createElement('div');
-                            div.innerHTML = text;
-                            var innerImg = div.querySelector('img');
-                            if (innerImg && innerImg.src && ns.parentNode) {
-                                ns.parentNode.insertBefore(innerImg, ns);
-                            }
-                        }
-                    });
-
-                    // 4. Materialize CSSOM dynamic style rules into style tags
-                    try {
-                        for (var i = 0; i < document.styleSheets.length; i++) {
-                            var sheet = document.styleSheets[i];
-                            if (!sheet.href && sheet.cssRules && sheet.cssRules.length > 0) {
-                                var styleEl = document.createElement('style');
-                                var cssText = '';
-                                for (var j = 0; j < sheet.cssRules.length; j++) {
-                                    cssText += sheet.cssRules[j].cssText + '\n';
-                                }
-                                styleEl.textContent = cssText;
-                                document.head.appendChild(styleEl);
-                            }
-                        }
-                    } catch(csse) {}
-
-                    // 5. Unlock scroll & height constraints
-                    document.documentElement.style.overflow = 'visible';
-                    document.documentElement.style.maxHeight = 'none';
-                    document.body.style.overflow = 'visible';
-                    document.body.style.maxHeight = 'none';
-                } catch(e) {}
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(js) {
-            webView.postDelayed({ onComplete() }, 100L)
-        }
+        onComplete()
     }
 
     /**
@@ -324,9 +329,8 @@ object PaywallBypassHelper {
     }
 
     /**
-     * Injects surgical DOM unmasking, text-aware gate removal, sticky bar removal,
-     * horizontal width constraints (fixing CNN clipping), auto-clicking AP News/Substack buttons,
-     * and Next.js (__NEXT_DATA__) + JSON-LD articleBody recovery script before MHTML/PDF capture.
+     * Injects surgical DOM unmasking, text-aware gate removal, horizontal width constraints,
+     * and structured content hydration using zero-reflow CSS and bounded checks before capture.
      */
     fun unlockAndSanitizeDom(webView: WebView, onComplete: () -> Unit) {
         if (!webView.settings.javaScriptEnabled) {
@@ -336,300 +340,157 @@ object PaywallBypassHelper {
 
         val unlockScript = """
             (function() {
-                // 0. Constrain horizontal width so CNN and wide layouts never clip in PDF / full-page screenshots
                 try {
-                    var widthStyle = document.createElement('style');
-                    widthStyle.textContent = 'html, body { max-width: 100vw !important; overflow-x: hidden !important; }';
-                    (document.head || document.documentElement).appendChild(widthStyle);
-                } catch(we) {}
-
-                // 1. Remove ONLY true subscriber/piano/regwall modal overlays, cookie banners & floating players
-                var paywallSelectors = [
-                    '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
-                    '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
-                    '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]',
-                    // Offer gates & subscription overlays
-                    '[class*="offer-gate"]', '[class*="paywall-offer"]', '[class*="intro-offer"]',
-                    '[id*="offer-gate"]', '[class*="subscription-offer"]', '[class*="offer-container"]',
-                    // Cookie banners & consent overlays
-                    '[class*="cookie"]', '[id*="cookie"]', '[class*="consent"]', '[id*="consent"]',
-                    '[class*="onetrust"]', '[id*="onetrust"]', '[class*="usercentrics"]', '[class*="qc-cmp"]',
-                    '[id*="sp_message"]', '[class*="cmp-modal"]', '#onetrust-consent-sdk',
-                    // Substack modals & subscription popups
-                    '[class*="substack-modal"]', 'div.modal-wrapper', 'div.modal-table',
-                    '[class*="subscribe-modal"]', '[class*="paywall-banner"]',
-                    '[class*="post-preview-overlay"]', '[class*="paywall-boundary"]',
-                    '[class*="modal-overlay"]', '[class*="reader-popover"]',
-                    '[class*="subscriber-only-banner"]', '[class*="subscribe-widget"]',
-                    '[class*="pencraft"][role="dialog"]', 'div[class*="gate-container"]',
-                    // Connatix and floating video players
-                    '[class*="connatix"]', '[id*="connatix"]', 'div[class*="cnx-"]',
-                    '[class*="vdo_inline"]', '[class*="jwplayer"]', '[class*="floating-player"]',
-                    '[class*="persistent-player"]', '[class*="floating-video"]', '[class*="sticky-player"]', '[class*="mini-player"]'
-                ];
-                paywallSelectors.forEach(function(sel) {
-                    document.querySelectorAll(sel).forEach(function(el) {
-                        if (el.tagName !== 'BODY' && el.tagName !== 'HTML' && el.tagName !== 'MAIN' && el.tagName !== 'ARTICLE') {
-                            el.remove();
-                        }
-                    });
-                });
-
-                // 1b. Politico & general mid-article ad-slot, interrupt, spinner, and advertisement cleanup
-                var adSelectors = [
-                    '.story-interrupt', '.ad-slot', '[class*="story-interrupt"]', '[class*="ad-slot"]',
-                    '[id*="story-interrupt"]', '[id*="ad-slot"]', '[data-ad-slot]', '[class*="story-ad"]',
-                    '[class*="ad-container"]', '[class*="ad_container"]', '[class*="ad-wrapper"]',
-                    '[data-ad-type]', '[class*="ad--slot"]', '[class*="advertisement-slot"]',
-                    'aside.ad', 'div.ad', 'div[id*="google_ads"]', 'div[id*="dfp-ad"]',
-                    '[class*="spinner"]', '[class*="loader"]', '[id*="spinner"]', '[id*="loader"]',
-                    '[class*="interstitial"]', '[id*="interstitial"]'
-                ];
-                adSelectors.forEach(function(sel) {
-                    document.querySelectorAll(sel).forEach(function(el) {
-                        if (el.tagName !== 'BODY' && el.tagName !== 'HTML' && el.tagName !== 'MAIN' && el.tagName !== 'ARTICLE') {
-                            el.remove();
-                        }
-                    });
-                });
-                // Remove elements containing solely "Advertisement" or "Loading" / "Loading..."
-                document.querySelectorAll('div, p, span, aside, section').forEach(function(el) {
-                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
-                    var t = (el.innerText || '').trim();
-                    if (t === 'Advertisement' || t === 'ADVERTISEMENT' || t === 'Loading' || t === 'Loading...') {
-                        if (el.children.length <= 2 && el.querySelectorAll('p').length <= 1) {
-                            el.remove();
-                        }
+                    // 1. Fast zero-reflow CSS rule injection (<style id="webvaultr-fit-style">)
+                    if (!document.getElementById('webvaultr-fit-style')) {
+                        var styleEl = document.createElement('style');
+                        styleEl.id = 'webvaultr-fit-style';
+                        styleEl.textContent = 'html, body { max-width: 100vw !important; overflow-x: hidden !important; overflow-y: visible !important; max-height: none !important; height: auto !important; position: static !important; } ' +
+                            'article, main, [role="main"], [class*="article-body"], [class*="story-body"], [class*="post-content"] { overflow: visible !important; max-height: none !important; height: auto !important; -webkit-mask-image: none !important; mask-image: none !important; } ' +
+                            '[style*="blur"], .blur, [class*="blur"] { filter: none !important; -webkit-filter: none !important; } ' +
+                            '.story-interrupt, .ad-slot, [class*="story-interrupt"], [class*="ad-slot"], [id*="story-interrupt"], [id*="ad-slot"], [data-ad-slot], [class*="story-ad"], [class*="ad-container"], [class*="ad-wrapper"], aside.ad, div.ad, div[id*="google_ads"], div[id*="dfp-ad"], [class*="tp-backdrop"], [class*="tp-modal"], [class*="piano-root"], [class*="paywall-overlay"], [class*="regwall"], #onetrust-consent-sdk, [class*="sp_message"], [class*="cmp-modal"] { display: none !important; }';
+                        (document.head || document.documentElement).appendChild(styleEl);
                     }
-                });
 
-                // 2. Ensure off-canvas mobile drawers (like NBC News blue menu) and state dropdowns stay hidden
-                var hiddenDrawers = [
-                    '[aria-hidden="true"]', '[class*="nav-drawer"]', '[class*="mobile-menu"]',
-                    '[class*="menu-drawer"]', '[class*="offcanvas"]', 'nav [class*="drawer"]',
-                    'header ul', 'nav ul', '[class*="state-list"]', '[class*="navigation__list"]',
-                    '[class*="quick-links"]', '[class*="global-nav__menu"]', '[class*="hamburger-menu"]',
-                    '[class*="msg-drawer"]', '[class*="drawer-container"]', 'header [role="dialog"]',
-                    '[class*="slide-out"]', '[class*="nav-panel"]'
-                ];
-                hiddenDrawers.forEach(function(sel) {
-                    document.querySelectorAll(sel).forEach(function(el) {
-                        el.style.setProperty('display', 'none', 'important');
-                    });
-                });
-
-                // 3. Text-Aware Gate Removal (The Verge, WaPo, Substack, etc.)
-                var gatePhrases = [
-                    "continue reading",
-                    "with a verge subscription",
-                    "two ways to read this article",
-                    "terms of use/your privacy rights",
-                    "go beyond the headline",
-                    "subscribe to the verge",
-                    "read in the substack app",
-                    "expand post",
-                    "sign up to keep reading",
-                    "subscribe to keep reading",
-                    "get the substack app",
-                    "read in app",
-                    "free preview",
-                    "this post is for paid subscribers",
-                    "upgrade to paid",
-                    "already a subscriber? sign in",
-                    "let's be inbox friends",
-                    "open in app",
-                    "open in the substack app",
-                    "continue in app"
-                ];
-                var potentialGates = document.querySelectorAll('div, section, aside, form, dialog, [role="dialog"], [role="alertdialog"]');
-                potentialGates.forEach(function(el) {
-                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
-                    if (el.closest('article') && (el.innerText || '').length > 1200) return;
-                    var text = (el.innerText || '').toLowerCase();
-                    if (text.length > 0 && text.length < 1500) {
-                        for (var i = 0; i < gatePhrases.length; i++) {
-                            if (text.indexOf(gatePhrases[i]) !== -1) {
+                    // 2. Remove blocking paywall/cookie modal overlays
+                    var modalSelectors = [
+                        '[class*="paywall-"]', '[id*="paywall"]', '[class*="tp-modal"]', '[class*="tp-backdrop"]',
+                        '[class*="piano-"]', '[id*="piano-"]', '[class*="regwall"]', '[data-qa*="paywall"]',
+                        '[class*="subscription-wall"]', '[class*="meter-wall"]', '[id*="gateway-content"]',
+                        '[class*="offer-gate"]', '[class*="paywall-offer"]', '[id*="offer-gate"]',
+                        '[class*="onetrust"]', '[id*="onetrust"]', '[class*="usercentrics"]', '[class*="qc-cmp"]',
+                        '#onetrust-consent-sdk', '[class*="substack-modal"]', 'div.modal-wrapper',
+                        '[class*="connatix"]', '[id*="connatix"]', 'div[class*="cnx-"]'
+                    ];
+                    modalSelectors.forEach(function(sel) {
+                        document.querySelectorAll(sel).forEach(function(el) {
+                            if (el.tagName !== 'BODY' && el.tagName !== 'HTML' && el.tagName !== 'MAIN' && el.tagName !== 'ARTICLE') {
                                 el.remove();
-                                break;
+                            }
+                        });
+                    });
+
+                    // 2b. Bounded check (txt.length < 950 and p.length < 5) for offer gates, subscription overlays, cookie drawers
+                    document.querySelectorAll('div, section, aside, dialog').forEach(function(el) {
+                        if (el === document.body || el === document.documentElement || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
+                        if (el.querySelector('article, main')) return;
+                        var txt = (el.innerText || '').trim();
+                        if (txt.length > 0 && txt.length < 950 && el.querySelectorAll('p').length < 5) {
+                            var lower = txt.toLowerCase();
+                            if (lower.indexOf('manage cookie preferences') !== -1 ||
+                                lower.indexOf('cookie banner') !== -1 ||
+                                lower.indexOf('claim offer') !== -1 ||
+                                lower.indexOf('two ways to read this article') !== -1 ||
+                                lower.indexOf('subscribe to continue') !== -1 ||
+                                lower.indexOf('already a subscriber? sign in') !== -1 ||
+                                lower.indexOf('advertisement') === 0) {
+                                el.remove();
                             }
                         }
-                    }
-                });
+                    });
 
-                // 3b. Auto-dismiss or click AP News / Substack expand/dismiss buttons
-                document.querySelectorAll('button, a, div[role="button"]').forEach(function(btn) {
-                    var t = (btn.innerText || '').trim().toLowerCase();
-                    if (t === 'expand post' || t === 'expand' || t === 'continue reading' || t === 'read more' || t === 'view more' || t === 'no thanks' || t === 'read first' || t === 'close x' || t === 'close') {
-                        try { btn.click(); } catch(e) {}
-                    }
-                });
+                    // 3. Eager-load images inside article, main, figure only
+                    var scope = document.querySelector('article') || document.querySelector('main') || document.body;
+                    scope.querySelectorAll('img').forEach(function(img) {
+                        var dataSrc = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || img.getAttribute('data-original');
+                        if (dataSrc && (!img.src || img.src.indexOf('data:') === 0)) {
+                            img.src = dataSrc;
+                        }
+                        img.removeAttribute('loading');
+                    });
 
-                // 4. Bottom-Anchored Sticky Bar & Backdrop Dimmer Removal
-                document.querySelectorAll('*').forEach(function(el) {
-                    if (el.tagName === 'BODY' || el.tagName === 'HTML' || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
-                    var style = window.getComputedStyle(el);
-                    var pos = style.position;
-                    if (pos === 'fixed' || pos === 'sticky') {
-                        var rect = el.getBoundingClientRect();
-                        if (rect.top > window.innerHeight * 0.40 && rect.height < window.innerHeight * 0.85) {
-                            el.remove();
-                            return;
-                        }
-                        var bg = style.backgroundColor;
-                        if (bg && (bg.indexOf('rgba') !== -1 || bg.indexOf('hsla') !== -1)) {
-                            if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
-                                el.remove();
-                                return;
-                            }
-                        }
-                    } else {
-                        var bg = style.backgroundColor;
-                        if (bg && (bg.indexOf('rgba') !== -1 || bg.indexOf('hsla') !== -1)) {
-                            var z = parseInt(style.zIndex, 10);
-                            if (z > 100) {
-                                var rect = el.getBoundingClientRect();
-                                if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
-                                    el.remove();
-                                    return;
+                    // 4. Single-pass TreeWalker ROT-1 unscrambler with data-wv-decoded marker
+                    try {
+                        var articleRoot = document.querySelector('article') || document.querySelector('main') || document.body;
+                        if (!articleRoot.getAttribute('data-wv-decoded')) {
+                            var walker = document.createTreeWalker(articleRoot, NodeFilter.SHOW_TEXT, null, false);
+                            var textNode;
+                            while (textNode = walker.nextNode()) {
+                                var val = textNode.nodeValue;
+                                if (val && val.length > 30 && /^[a-zA-Z\s.,'"!?\-]+$/.test(val)) {
+                                    var sample = val.trim().split(/\s+/).slice(0, 6);
+                                    var rotHits = 0;
+                                    for (var i = 0; i < sample.length; i++) {
+                                        var w = sample[i].toLowerCase();
+                                        if (w === "uif" || w === "boe" || w === "up" || w === "jo" || w === "pg" || w === "xbt") {
+                                            rotHits++;
+                                        }
+                                    }
+                                    if (rotHits >= 2) {
+                                        var decoded = '';
+                                        for (var j = 0; j < val.length; j++) {
+                                            var code = val.charCodeAt(j);
+                                            if (code >= 66 && code <= 90) decoded += String.fromCharCode(code - 1);
+                                            else if (code === 65) decoded += 'Z';
+                                            else if (code >= 98 && code <= 122) decoded += String.fromCharCode(code - 1);
+                                            else if (code === 97) decoded += 'z';
+                                            else decoded += val.charAt(j);
+                                        }
+                                        textNode.nodeValue = decoded;
+                                    }
                                 }
                             }
+                            articleRoot.setAttribute('data-wv-decoded', 'true');
                         }
-                    }
-                });
+                    } catch(re) {}
 
-                // 5. Unlock scroll & truncation ONLY on document and article containers (NEVER on '*')
-                var contentContainers = document.querySelectorAll(
-                    'html, body, main, article, [role="main"], [class*="article-body"], [class*="story-body"], [class*="article-content"], [class*="paywall-content"], [class*="post-content"], [class*="substack-post"], [class*="post-body"], [class*="body-markup"], [class*="single-post"], [class*="article-body__content"]'
-                );
-                contentContainers.forEach(function(el) {
-                    el.style.setProperty('overflow', 'visible', 'important');
-                    el.style.setProperty('overflow-y', 'visible', 'important');
-                    el.style.setProperty('max-height', 'none', 'important');
-                    el.style.setProperty('height', 'auto', 'important');
-                    el.style.setProperty('-webkit-mask-image', 'none', 'important');
-                    el.style.setProperty('mask-image', 'none', 'important');
-                    el.style.setProperty('position', 'static', 'important');
-                });
-
-                // 6. Arc XP Fusion, Next.js (__NEXT_DATA__) & JSON-LD Structured DOM Hydration
-                // Always hydrate whenever recovered structured story text exceeds non-modal paragraph text by 250+ chars
-                try {
-                    var articleEl = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
-                    var visibleLen = (articleEl ? (articleEl.innerText || '') : '').trim().length;
-
-                    var recoveredParas = [];
-
-                    // 6a. Arc XP Fusion (e.g. Boston Globe, Washington Post)
-                    try {
-                        var fusionObj = null;
-                        if (window.Fusion && window.Fusion.globalContent) {
-                            fusionObj = window.Fusion.globalContent;
-                        } else {
-                            var fusionScript = document.getElementById('fusion-metadata') || document.querySelector('script[id*="fusion"]');
-                            if (fusionScript && fusionScript.textContent) {
-                                var fMatch = fusionScript.textContent.match(/Fusion\.globalContent\s*=\\s*(\{.*?\}\);/);
-                                if (fMatch) fusionObj = JSON.parse(fMatch[1]);
-                            }
+                    // 5. Strip reversed-word paragraphs in DOM
+                    var revStopRegex = /\b(eht|dna|morf|sih|htiw|yeht|erew|taht|tnebmucni|citarcomed|nacilbuper)\b/gi;
+                    document.querySelectorAll('p, li').forEach(function(p) {
+                        var txt = (p.innerText || '').trim();
+                        var matches = txt.match(revStopRegex);
+                        if (matches && matches.length >= 3) {
+                            p.remove();
                         }
-                        if (fusionObj) {
-                            function extractFusion(obj) {
-                                if (!obj || typeof obj !== 'object') return;
-                                if (Array.isArray(obj.content_elements)) {
-                                    obj.content_elements.forEach(function(item) {
-                                        if (!item) return;
-                                        var raw = item.content || item.text || '';
-                                        if (typeof raw === 'string' && raw.trim().length > 0) {
-                                            var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                            if (clean.length > 0) recoveredParas.push(clean);
+                    });
+
+                    // 6. Hydrate JSON-LD / Fusion paragraphs into #webvaultr-hydrated-body ONLY if story container has < 4 paragraphs
+                    var storyContainer = document.querySelector('article') || document.querySelector('main') || document.querySelector('[role="main"]');
+                    var existingParaCount = storyContainer ? storyContainer.querySelectorAll('p').length : document.querySelectorAll('p').length;
+                    if (existingParaCount < 4 && !document.getElementById('webvaultr-hydrated-body')) {
+                        var recoveredParas = [];
+
+                        // 6a. JSON-LD articleBody
+                        document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s) {
+                            try {
+                                var data = JSON.parse(s.textContent || '{}');
+                                var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
+                                items.forEach(function(item) {
+                                    if (item && typeof item.articleBody === 'string' && item.articleBody.length > 200) {
+                                        var split = item.articleBody.split(/\n+/).map(function(p) { return p.trim(); }).filter(function(p) { return p.length > 0; });
+                                        if (split.length > recoveredParas.length) recoveredParas = split;
+                                    }
+                                });
+                            } catch(e) {}
+                        });
+
+                        // 6b. Fusion globalContent
+                        if (recoveredParas.length === 0 && window.Fusion && window.Fusion.globalContent) {
+                            try {
+                                var elements = window.Fusion.globalContent.content_elements;
+                                if (Array.isArray(elements)) {
+                                    elements.forEach(function(el) {
+                                        var t = (el && (el.content || el.text)) || '';
+                                        if (typeof t === 'string' && t.trim().length > 0) {
+                                            recoveredParas.push(t.replace(/<[^>]*>/g, '').trim());
                                         }
                                     });
                                 }
-                                for (var fk in obj) {
-                                    if (obj.hasOwnProperty(fk) && typeof obj[fk] === 'object' && fk !== 'content_elements') {
-                                        extractFusion(obj[fk]);
-                                    }
-                                }
-                            }
-                            extractFusion(fusionObj);
+                            } catch(e) {}
                         }
-                    } catch(fe) {}
 
-                    // 6b. Next.js (__NEXT_DATA__)
-                    var nextDataEl = document.getElementById('__NEXT_DATA__');
-                    if (nextDataEl && nextDataEl.textContent) {
-                        try {
-                            var nextData = JSON.parse(nextDataEl.textContent);
-                            function findContentElements(obj) {
-                                if (!obj || typeof obj !== 'object') return;
-                                if (Array.isArray(obj)) {
-                                    for (var i = 0; i < obj.length; i++) findContentElements(obj[i]);
-                                } else {
-                                    if (Array.isArray(obj.content_elements)) {
-                                        obj.content_elements.forEach(function(item) {
-                                            var raw = (item && (item.content || item.text)) || '';
-                                            if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                                if (clean.length > 0) recoveredParas.push(clean);
-                                            }
-                                        });
-                                    }
-                                    if (Array.isArray(obj.body)) {
-                                        obj.body.forEach(function(item) {
-                                            var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
-                                            if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                var clean = raw.replace(/<[^>]*>/g, '').trim();
-                                                if (clean.length > 0) recoveredParas.push(clean);
-                                            }
-                                        });
-                                    }
-                                    for (var k in obj) {
-                                        if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
-                                            findContentElements(obj[k]);
-                                        }
-                                    }
-                                }
-                            }
-                            findContentElements(nextData);
-                        } catch (ne) {}
-                    }
-
-                    // 6c. JSON-LD articleBody
-                    var longestLdBody = '';
-                    var scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                    scripts.forEach(function(s) {
-                        try {
-                            var data = JSON.parse(s.textContent || '{}');
-                            var items = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
-                            items.forEach(function(item) {
-                                if (item && typeof item.articleBody === 'string' && item.articleBody.length > longestLdBody.length) {
-                                    longestLdBody = item.articleBody;
-                                }
+                        if (recoveredParas.length >= 4) {
+                            var hydratedDiv = document.createElement('div');
+                            hydratedDiv.id = 'webvaultr-hydrated-body';
+                            hydratedDiv.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, serif; font-size: 18px; line-height: 1.65; color: #111;';
+                            recoveredParas.forEach(function(pText) {
+                                var pEl = document.createElement('p');
+                                pEl.style.cssText = 'margin-bottom: 16px;';
+                                pEl.textContent = pText;
+                                hydratedDiv.appendChild(pEl);
                             });
-                        } catch (je) {}
-                    });
-
-                    var recoveredText = recoveredParas.join('\n\n').trim();
-                    var candidateParas = [];
-                    if (recoveredText.length >= visibleLen + 250 && recoveredParas.length > 0) {
-                        candidateParas = recoveredParas;
-                    } else if (longestLdBody.length >= visibleLen + 250) {
-                        candidateParas = longestLdBody.split(/\n+/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
-                    }
-
-                    if (candidateParas.length > 0 && !document.getElementById('webvaultr-hydrated-content')) {
-                        var container = document.createElement('div');
-                        container.id = 'webvaultr-hydrated-content';
-                        container.style.cssText = 'padding: 16px 0; font-family: Georgia, -apple-system, sans-serif; font-size: 18px; line-height: 1.65; color: #111;';
-                        candidateParas.forEach(function(para) {
-                            var p = document.createElement('p');
-                            p.style.cssText = 'margin-bottom: 14px;';
-                            p.textContent = para;
-                            container.appendChild(p);
-                        });
-                        articleEl.appendChild(container);
-                    }
-                } catch (e) {}
-                            articleEl.appendChild(container);
+                            var targetMount = storyContainer || document.body;
+                            targetMount.appendChild(hydratedDiv);
                         }
                     }
                 } catch (e) {}
@@ -643,7 +504,8 @@ object PaywallBypassHelper {
 
         webView.evaluateJavascript(unlockScript) {
             DiagnosticLogHelper.log(TAG, "DOM sanitization and unlock script finished")
-            webView.postDelayed({ onComplete() }, 150L)
+            onComplete()
         }
     }
 }
+

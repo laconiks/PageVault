@@ -41,6 +41,10 @@ data class RawCaptureResult(
 
 class WebArchiveCaptureManager(private val context: Context) {
 
+    init {
+        DiagnosticLogHelper.init(context)
+    }
+
     companion object {
         private const val TAG = "WebArchiveCapture"
         private const val VIEWPORT_WIDTH_PX = 1080
@@ -287,7 +291,9 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val resolvedTitle = parsed.optString("title").ifBlank { webView.title ?: targetUrl }
                     val siteName = parsed.optString("siteName").takeIf { it.isNotBlank() }
                     val author = parsed.optString("author").takeIf { it.isNotBlank() }
-                    var extractedText = PaywallBypassHelper.decodeRot1IfObfuscated(parsed.optString("bodyText").ifBlank { resolvedTitle })
+                    var extractedText = PaywallBypassHelper.stripReversedWordGibberish(
+                        PaywallBypassHelper.decodeRot1IfObfuscated(parsed.optString("bodyText").ifBlank { resolvedTitle })
+                    )
 
                     val keywordsArr = parsed.optJSONArray("keywords")
                     val extractedKeywords = buildList {
@@ -312,28 +318,37 @@ class WebArchiveCaptureManager(private val context: Context) {
                     DiagnosticLogHelper.log(TAG, "DOM extracted: title='$resolvedTitle', rawScrollHeight=$rawScrollHeight, density=$density -> measuredHeight=$measuredHeight, keywords=${extractedKeywords.size}")
 
                     // Fallback DOM Injection: If extracted text is short (< 500 chars) or restricted,
-                    // fetch reader fallback and replace WebView body with clean reader view BEFORE MHTML & screenshot!
+                    // fetch reader fallback and update text corpus.
+                    // IMPORTANT: Only inject into live WebView DOM if the visual page was truncated/blank (rawScrollHeight <= 1200).
+                    // If the live WebView already rendered a full visual page (rawScrollHeight > 1200), keep the authentic visual layout
+                    // for MHTML & Screenshot, while using cleanFallback for Clean Reader & Markdown!
                     if (extractedText.trim().length < 500 || PaywallBypassHelper.isPaywallOrCaptchaBlocked(extractedText)) {
                         DiagnosticLogHelper.log(TAG, "Short extracted DOM text (${extractedText.trim().length} chars). Fetching reader fallback text for $targetUrl")
                         val cleanFallback = withContext(Dispatchers.IO) {
                             PaywallBypassHelper.fetchReaderFallbackText(targetUrl)
                         }
                         if (!cleanFallback.isNullOrBlank() && cleanFallback.length > extractedText.length) {
-                            DiagnosticLogHelper.log(TAG, "Full fallback text retrieved (${cleanFallback.length} chars). Injecting clean reader view into live WebView DOM...")
+                            DiagnosticLogHelper.log(TAG, "Full fallback text retrieved (${cleanFallback.length} chars). Updating extracted text corpus...")
                             extractedText = PaywallBypassHelper.decodeRot1IfObfuscated(cleanFallback)
-                            PaywallBypassHelper.injectCleanReaderFallbackIntoWebView(webView, extractedText, resolvedTitle)
-                            delay(250)
 
-                            val newScrollHeightStr = withTimeoutOrNull(2000L) {
-                                evaluateJsSuspend(webView, "Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)")
-                            }
-                            val newScrollHeight = newScrollHeightStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
-                            if (newScrollHeight > 0) {
-                                val newCalculated = (newScrollHeight * density).toInt()
-                                if (newCalculated > measuredHeight) {
-                                    measuredHeight = newCalculated.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
-                                    DiagnosticLogHelper.log(TAG, "Recalculated measuredHeight after fallback injection: $measuredHeight")
+                            if (rawScrollHeight <= 1200) {
+                                DiagnosticLogHelper.log(TAG, "Live visual page is blank/short (rawScrollHeight=$rawScrollHeight <= 1200). Injecting clean reader view into live WebView DOM...")
+                                PaywallBypassHelper.injectCleanReaderFallbackIntoWebView(webView, extractedText, resolvedTitle)
+                                delay(250)
+
+                                val newScrollHeightStr = withTimeoutOrNull(2000L) {
+                                    evaluateJsSuspend(webView, "Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0)")
                                 }
+                                val newScrollHeight = newScrollHeightStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
+                                if (newScrollHeight > 0) {
+                                    val newCalculated = (newScrollHeight * density).toInt()
+                                    if (newCalculated > measuredHeight) {
+                                        measuredHeight = newCalculated.coerceIn(DEFAULT_VIEWPORT_HEIGHT_PX, MAX_CAPTURE_HEIGHT_PX)
+                                        DiagnosticLogHelper.log(TAG, "Recalculated measuredHeight after fallback injection: $measuredHeight")
+                                    }
+                                }
+                            } else {
+                                DiagnosticLogHelper.log(TAG, "Preserving authentic visual DOM (rawScrollHeight=$rawScrollHeight > 1200) for MHTML & screenshot; clean reader text stored for reader view.")
                             }
                         }
                     }
@@ -348,9 +363,9 @@ class WebArchiveCaptureManager(private val context: Context) {
                         }
                     }
 
-                    // Save MHTML archive with a 6s safety timeout from the true visual WebView
+                    // Save MHTML archive with a 10s safety timeout from the true visual WebView
                     DiagnosticLogHelper.log(TAG, "Saving MHTML web archive...")
-                    withTimeoutOrNull(6_000L) {
+                    withTimeoutOrNull(10_000L) {
                         saveWebArchiveSuspend(webView, mhtmlFile.absolutePath)
                     }
                     if (!mhtmlFile.exists() || mhtmlFile.length() == 0L) {
@@ -473,9 +488,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     targetView.evaluateJavascript("(document.body && document.body.innerText) ? document.body.innerText.trim().length : 0") { lenStr ->
                         val textLen = lenStr?.trim()?.removeSurrounding("\"")?.toIntOrNull() ?: 0
                         if (textLen >= 800 || newProgress >= 98) {
-                            PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
-                                resumeSafely("onProgressChanged >= 75 (progress=$newProgress%, textLen=$textLen)")
-                            }
+                            resumeSafely("onProgressChanged >= 75 (progress=$newProgress%, textLen=$textLen)")
                         }
                     }
                 }
@@ -495,10 +508,7 @@ class WebArchiveCaptureManager(private val context: Context) {
                     return
                 }
                 DiagnosticLogHelper.log(TAG, "onPageFinished: $finishedUrl")
-                val targetView = view ?: webView
-                PaywallBypassHelper.unlockAndSanitizeDom(targetView) {
-                    resumeSafely("onPageFinished")
-                }
+                resumeSafely("onPageFinished")
             }
 
             override fun onReceivedError(
