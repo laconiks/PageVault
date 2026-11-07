@@ -380,11 +380,19 @@ object PaywallBypassHelper {
                         });
                     });
 
-                    // 2b. Bounded check (txt.length < 950 and p.length < 5) for offer gates, subscription overlays, cookie drawers
-                    document.querySelectorAll('div, section, aside, dialog').forEach(function(el) {
+                    // 2b. Bounded check for widget code, offer gates, subscription overlays, cookie drawers
+                    document.querySelectorAll('div, section, aside, dialog, p').forEach(function(el) {
                         if (el === document.body || el === document.documentElement || el.tagName === 'MAIN' || el.tagName === 'ARTICLE') return;
                         if (el.querySelector('article, main')) return;
-                        var txt = (el.innerText || '').trim();
+                        var txt = (el.innerText || el.textContent || '').trim();
+                        if (txt.indexOf('pymParent') !== -1 ||
+                            txt.indexOf('datawrapper-height') !== -1 ||
+                            txt.indexOf('To continue reading, please login') !== -1 ||
+                            txt.indexOf('Get 6 Months of Unlimited Access') !== -1 ||
+                            txt.indexOf('Get 4 weeks of unlimited access') !== -1) {
+                            el.remove();
+                            return;
+                        }
                         if (txt.length > 0 && txt.length < 950 && el.querySelectorAll('p').length < 5) {
                             var lower = txt.toLowerCase();
                             if (lower.indexOf('manage cookie preferences') !== -1 ||
@@ -447,8 +455,21 @@ object PaywallBypassHelper {
                         }
                     } catch(re) {}
 
-                    // 5. Strip reversed-word paragraphs in DOM
+                    // 5. Strip reversed-word paragraphs in DOM and remove blurred decoy container wrappers
                     var revStopRegex = /\b(eht|dna|morf|sih|htiw|yeht|erew|taht|tnebmucni|citarcomed|nacilbuper)\b/gi;
+                    document.querySelectorAll('div, section').forEach(function(d) {
+                        if (d === document.body || d === document.documentElement || d.querySelector('article, main')) return;
+                        var revParaCount = 0;
+                        d.querySelectorAll('p').forEach(function(p) {
+                            var pt = (p.innerText || '').trim();
+                            var m = pt.match(revStopRegex);
+                            if (m && m.length >= 3) revParaCount++;
+                        });
+                        var styleStr = (d.getAttribute('style') || '') + ' ' + (d.className || '');
+                        if (revParaCount >= 2 || (revParaCount >= 1 && /blur/i.test(styleStr))) {
+                            d.remove();
+                        }
+                    });
                     document.querySelectorAll('p, li').forEach(function(p) {
                         var txt = (p.innerText || '').trim();
                         var matches = txt.match(revStopRegex);
@@ -484,9 +505,20 @@ object PaywallBypassHelper {
                                 var elements = window.Fusion.globalContent.content_elements;
                                 if (Array.isArray(elements)) {
                                     elements.forEach(function(el) {
-                                        var t = (el && (el.content || el.text)) || '';
-                                        if (typeof t === 'string' && t.trim().length > 0) {
-                                            recoveredParas.push(t.replace(/<[^>]*>/g, '').trim());
+                                        var raw = (el && (el.content || el.text)) || '';
+                                        if (typeof raw === 'string' && raw.trim().length > 0) {
+                                            var tmp = document.createElement('div');
+                                            tmp.innerHTML = raw;
+                                            tmp.querySelectorAll('script, style, iframe, noscript, svg, button').forEach(function(s) { s.remove(); });
+                                            var clean = (tmp.innerText || tmp.textContent || '').trim();
+                                            if (clean.length > 0 &&
+                                                clean.indexOf('function(') === -1 &&
+                                                clean.indexOf('pymParent') === -1 &&
+                                                clean.indexOf('datawrapper-height') === -1 &&
+                                                clean.indexOf('addEventListener') === -1
+                                            ) {
+                                                recoveredParas.push(clean);
+                                            }
                                         }
                                     });
                                 }
@@ -508,7 +540,18 @@ object PaywallBypassHelper {
                                                 obj.content_elements.forEach(function(item) {
                                                     var raw = (item && (item.content || item.text)) || '';
                                                     if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                        recoveredParas.push(raw.replace(/<[^>]*>/g, '').trim());
+                                                        var tmp = document.createElement('div');
+                                                        tmp.innerHTML = raw;
+                                                        tmp.querySelectorAll('script, style, iframe, noscript, svg, button').forEach(function(s) { s.remove(); });
+                                                        var clean = (tmp.innerText || tmp.textContent || '').trim();
+                                                        if (clean.length > 0 &&
+                                                            clean.indexOf('function(') === -1 &&
+                                                            clean.indexOf('pymParent') === -1 &&
+                                                            clean.indexOf('datawrapper-height') === -1 &&
+                                                            clean.indexOf('addEventListener') === -1
+                                                        ) {
+                                                            recoveredParas.push(clean);
+                                                        }
                                                     }
                                                 });
                                             }
@@ -516,7 +559,18 @@ object PaywallBypassHelper {
                                                 obj.body.forEach(function(item) {
                                                     var raw = (item && (item.content || item.text || (item.children && item.children[0] && item.children[0].text))) || '';
                                                     if (typeof raw === 'string' && raw.trim().length > 0) {
-                                                        recoveredParas.push(raw.replace(/<[^>]*>/g, '').trim());
+                                                        var tmp = document.createElement('div');
+                                                        tmp.innerHTML = raw;
+                                                        tmp.querySelectorAll('script, style, iframe, noscript, svg, button').forEach(function(s) { s.remove(); });
+                                                        var clean = (tmp.innerText || tmp.textContent || '').trim();
+                                                        if (clean.length > 0 &&
+                                                            clean.indexOf('function(') === -1 &&
+                                                            clean.indexOf('pymParent') === -1 &&
+                                                            clean.indexOf('datawrapper-height') === -1 &&
+                                                            clean.indexOf('addEventListener') === -1
+                                                        ) {
+                                                            recoveredParas.push(clean);
+                                                        }
                                                     }
                                                 });
                                             }

@@ -19,18 +19,25 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -52,10 +59,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import com.local.webvaultr.ai.OnDeviceAiSummarizer
 import com.local.webvaultr.data.local.ArchiveDatabase
 import com.local.webvaultr.data.local.ArchivedPage
 import com.local.webvaultr.ui.theme.PocketArchiveTheme
+import com.local.webvaultr.ui.theme.ThemeMode
+import com.local.webvaultr.util.AppUiPreferences
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -72,14 +83,18 @@ class OfflineMhtmlViewerActivity : ComponentActivity() {
         val originalUrl = intent.getStringExtra("ORIGINAL_URL") ?: ""
         val pageUuid = intent.getStringExtra("PAGE_UUID") ?: ""
 
+        AppUiPreferences.init(applicationContext)
+
         setContent {
-            PocketArchiveTheme {
+            val themeMode by AppUiPreferences.themeMode.collectAsState()
+            PocketArchiveTheme(themeMode = themeMode) {
                 OfflineViewerScreen(
                     initialTitle = pageTitle,
                     initialUrl = originalUrl,
                     initialMhtmlPath = mhtmlPath,
                     initialScreenshotPath = screenshotPath,
                     initialUuid = pageUuid,
+                    themeMode = themeMode,
                     onBack = { finish() }
                 )
             }
@@ -95,15 +110,43 @@ fun OfflineViewerScreen(
     initialMhtmlPath: String?,
     initialScreenshotPath: String?,
     initialUuid: String,
+    themeMode: ThemeMode = ThemeMode.CYBER,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
     var viewerMode by remember { mutableStateOf(ViewerMode.MHTML) }
     var showMenu by remember { mutableStateOf(false) }
 
     var allPages by remember { mutableStateOf<List<ArchivedPage>>(emptyList()) }
     var currentIndex by remember { mutableIntStateOf(0) }
+    var aiTakeawaysText by remember { mutableStateOf<String?>(null) }
+    var isGeneratingTakeaways by remember { mutableStateOf(false) }
+
+    val isSystemDark = isSystemInDarkTheme()
+    val effectiveMode = when (themeMode) {
+        ThemeMode.SYSTEM -> if (isSystemDark) ThemeMode.DARK else ThemeMode.LIGHT
+        else -> themeMode
+    }
+
+    val (barContainerColor, barContentColor, barAccentColor) = when (effectiveMode) {
+        ThemeMode.LIGHT -> Triple(
+            Color(0xFFF1F5F9), // crisp light slate
+            Color(0xFF0F172A), // deep slate text/icons
+            Color(0xFF0284C7)  // vibrant ocean blue
+        )
+        ThemeMode.DARK -> Triple(
+            Color(0xFF1E293B),
+            Color(0xFFF8FAFC),
+            Color(0xFF38BDF8)  // sky blue accent
+        )
+        else -> Triple(
+            Color(0xFF0C0D14),
+            Color(0xFFF8FAFC),
+            Color(0xFFFCEE09)  // Cyber yellow accent
+        )
+    }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -185,6 +228,12 @@ fun OfflineViewerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = barContainerColor,
+                    titleContentColor = barContentColor,
+                    navigationIconContentColor = barContentColor,
+                    actionIconContentColor = barContentColor
+                ),
                 title = {
                     Column {
                         Text(
@@ -192,7 +241,8 @@ fun OfflineViewerScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = barContentColor
                         )
                         val modeLabel = when (viewerMode) {
                             ViewerMode.MHTML -> "Offline MHTML Archive"
@@ -206,7 +256,7 @@ fun OfflineViewerScreen(
                                 modeLabel
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                            color = barAccentColor
                         )
                     }
                 },
@@ -219,7 +269,8 @@ fun OfflineViewerScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back to Vault"
+                            contentDescription = "Back to Vault",
+                            tint = barContentColor
                         )
                     }
                 },
@@ -234,7 +285,7 @@ fun OfflineViewerScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.MenuBook,
                             contentDescription = "Clean Reader Mode",
-                            tint = if (viewerMode == ViewerMode.READER) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            tint = if (viewerMode == ViewerMode.READER) barAccentColor else barContentColor
                         )
                     }
 
@@ -249,7 +300,7 @@ fun OfflineViewerScreen(
                             Icon(
                                 imageVector = if (viewerMode == ViewerMode.SCREENSHOT) Icons.Default.Web else Icons.Default.Image,
                                 contentDescription = "Toggle MHTML / Screenshot",
-                                tint = MaterialTheme.colorScheme.secondary
+                                tint = if (viewerMode == ViewerMode.SCREENSHOT) barAccentColor else barContentColor
                             )
                         }
                     }
@@ -259,13 +310,32 @@ fun OfflineViewerScreen(
                         IconButton(onClick = { showMenu = true }) {
                             Icon(
                                 imageVector = Icons.Default.MoreVert,
-                                contentDescription = "More Options"
+                                contentDescription = "More Options",
+                                tint = barContentColor
                             )
                         }
                         DropdownMenu(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("✨ AI Key Takeaways & Entities") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = barAccentColor)
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    coroutineScope.launch {
+                                        isGeneratingTakeaways = true
+                                        val text = OnDeviceAiSummarizer(context).generateArticleTakeaways(
+                                            title = currentPage?.title ?: title,
+                                            bodyText = currentPage?.extractedTextSummary?.ifBlank { readerText } ?: readerText
+                                        )
+                                        aiTakeawaysText = text
+                                        isGeneratingTakeaways = false
+                                    }
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("📸 Capture QA Snapshot") },
                                 leadingIcon = {
@@ -280,7 +350,7 @@ fun OfflineViewerScreen(
                                 DropdownMenuItem(
                                     text = { Text("🌐 Open Live Webpage") },
                                     leadingIcon = {
-                                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, tint = barAccentColor)
                                     },
                                     onClick = {
                                         showMenu = false
@@ -310,7 +380,8 @@ fun OfflineViewerScreen(
         bottomBar = {
             if (allPages.size > 1) {
                 Surface(
-                    color = Color(0xFF0C0D14),
+                    color = barContainerColor,
+                    contentColor = barContentColor,
                     tonalElevation = 8.dp,
                     shadowElevation = 8.dp,
                     modifier = Modifier
@@ -328,10 +399,15 @@ fun OfflineViewerScreen(
                             onClick = {
                                 if (currentIndex > 0) {
                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    aiTakeawaysText = null
                                     currentIndex--
                                 }
                             },
-                            enabled = currentIndex > 0
+                            enabled = currentIndex > 0,
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = barAccentColor,
+                                disabledContentColor = barContentColor.copy(alpha = 0.35f)
+                            )
                         ) {
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous")
                             Spacer(Modifier.width(4.dp))
@@ -341,7 +417,7 @@ fun OfflineViewerScreen(
                         Text(
                             text = "Article ${currentIndex + 1} of ${allPages.size}",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFFFCEE09),
+                            color = barAccentColor,
                             fontWeight = FontWeight.Bold
                         )
 
@@ -349,10 +425,15 @@ fun OfflineViewerScreen(
                             onClick = {
                                 if (currentIndex < allPages.size - 1) {
                                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    aiTakeawaysText = null
                                     currentIndex++
                                 }
                             },
-                            enabled = currentIndex < allPages.size - 1
+                            enabled = currentIndex < allPages.size - 1,
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = barAccentColor,
+                                disabledContentColor = barContentColor.copy(alpha = 0.35f)
+                            )
                         ) {
                             Text("Next", fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.width(4.dp))
@@ -369,35 +450,113 @@ fun OfflineViewerScreen(
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            val stableKey = currentPage?.uuid ?: mhtmlPath ?: screenshotPath ?: "viewer_surface"
-            key(stableKey) {
-                when (viewerMode) {
-                    ViewerMode.SCREENSHOT -> {
-                        if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
-                            ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
-                        } else {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("Screenshot file not available for this capture.")
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (isGeneratingTakeaways) {
+                    Surface(
+                        color = barContainerColor,
+                        tonalElevation = 4.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, barAccentColor.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = barAccentColor
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "Generating Executive Takeaways & Figures...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = barContentColor
+                            )
+                        }
+                    }
+                } else if (aiTakeawaysText != null) {
+                    Surface(
+                        color = barContainerColor,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp)
+                            .animateContentSize(),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.2.dp, barAccentColor)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "✨ On-Device AI Takeaways",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = barAccentColor
+                                )
+                                IconButton(
+                                    onClick = { aiTakeawaysText = null },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = barContentColor.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            SelectionContainer {
+                                Text(
+                                    text = aiTakeawaysText.orEmpty(),
+                                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                                    color = barContentColor
+                                )
                             }
                         }
                     }
-                    ViewerMode.READER -> {
-                        OfflineReaderExtractedView(
-                            title = title,
-                            fallbackText = readerText
-                        )
-                    }
-                    ViewerMode.MHTML -> {
-                        if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
-                            OfflineMhtmlWebView(
-                                pageUuid = currentPage?.uuid ?: stableKey,
-                                mhtmlPath = mhtmlPath
-                            )
-                        } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
-                            ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
-                        } else {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("Snapshot file not found on disk.")
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    val stableKey = currentPage?.uuid ?: mhtmlPath ?: screenshotPath ?: "viewer_surface"
+                    key(stableKey) {
+                        when (viewerMode) {
+                            ViewerMode.SCREENSHOT -> {
+                                if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+                                    ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+                                } else {
+                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text("Screenshot file not available for this capture.")
+                                    }
+                                }
+                            }
+                            ViewerMode.READER -> {
+                                OfflineReaderExtractedView(
+                                    title = title,
+                                    fallbackText = readerText
+                                )
+                            }
+                            ViewerMode.MHTML -> {
+                                if (!mhtmlPath.isNullOrBlank() && File(mhtmlPath).exists()) {
+                                    OfflineMhtmlWebView(
+                                        pageUuid = currentPage?.uuid ?: stableKey,
+                                        mhtmlPath = mhtmlPath
+                                    )
+                                } else if (!screenshotPath.isNullOrBlank() && File(screenshotPath).exists()) {
+                                    ZoomableScreenshotCanvas(screenshotPath = screenshotPath)
+                                } else {
+                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text("Snapshot file not found on disk.")
+                                    }
+                                }
                             }
                         }
                     }

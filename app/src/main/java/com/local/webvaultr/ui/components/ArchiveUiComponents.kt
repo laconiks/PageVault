@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -524,6 +525,25 @@ fun VaultArticleCard(
         SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(page.timestampEpochMillis))
     }
 
+    val isLightTheme = MaterialTheme.colorScheme.background.luminance() > 0.5f
+
+    val cardBgColor = when {
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        isLightTheme -> Color(0xFFFFFFFF)
+        else -> brandColors.cardBackground
+    }
+
+    val cardBorder = when {
+        isSelected -> BorderStroke(2.dp, Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)))
+        isLightTheme -> BorderStroke(1.5.dp, brandColors.borderAccent.copy(alpha = 0.75f))
+        else -> BorderStroke(
+            1.dp,
+            Brush.horizontalGradient(
+                listOf(brandColors.borderAccent.copy(alpha = 0.85f), brandColors.borderAccent.copy(alpha = 0.3f))
+            )
+        )
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -540,16 +560,9 @@ fun VaultArticleCard(
                 }
             ),
         shape = RoundedCornerShape(16.dp),
-        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-        else brandColors.cardBackground,
+        color = cardBgColor,
         tonalElevation = 4.dp,
-        border = BorderStroke(
-            width = if (isSelected) 2.dp else 1.dp,
-            brush = Brush.horizontalGradient(
-                colors = if (isSelected) listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
-                else listOf(brandColors.borderAccent.copy(alpha = 0.85f), brandColors.borderAccent.copy(alpha = 0.3f))
-            )
-        )
+        border = cardBorder
     ) {
         Column {
             // Restore Wide Article Preview Banner Image (155.dp full-width)
@@ -569,6 +582,7 @@ fun VaultArticleCard(
                         modifier = Modifier.fillMaxSize()
                     )
                     // Gradient bottom scrim blending into brand card background
+                    val scrimColor = if (isLightTheme) Color.White else brandColors.cardBackground
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -576,8 +590,8 @@ fun VaultArticleCard(
                                 Brush.verticalGradient(
                                     colors = listOf(
                                         Color.Transparent,
-                                        brandColors.cardBackground.copy(alpha = 0.6f),
-                                        brandColors.cardBackground
+                                        scrimColor.copy(alpha = 0.6f),
+                                        scrimColor
                                     ),
                                     startY = 60f
                                 )
@@ -662,7 +676,7 @@ fun VaultArticleCard(
                         fontWeight = FontWeight.Bold,
                         lineHeight = 20.sp
                     ),
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = if (isLightTheme) Color(0xFF0F172A) else Color(0xFFF8FAFC),
                     maxLines = if (expanded) 5 else 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -752,7 +766,7 @@ fun VaultArticleCard(
                         Text(
                             text = "$summaryPrefix$bodySummary",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (isLightTheme) Color(0xFF334155) else Color(0xFFCBD5E1),
                             maxLines = if (expanded) 12 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -949,8 +963,8 @@ fun VaultArticleCard(
                     Surface(
                         onClick = onExportPdf,
                         shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
+                        color = if (isLightTheme) Color(0xFFE0F2FE) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        border = if (isLightTheme) BorderStroke(1.dp, Color(0xFF0369A1)) else BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -959,7 +973,7 @@ fun VaultArticleCard(
                             Icon(
                                 Icons.Default.PictureAsPdf,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = if (isLightTheme) Color(0xFF0284C7) else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
@@ -968,12 +982,12 @@ fun VaultArticleCard(
                                     "📄 PDF Snapshot",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = if (isLightTheme) Color(0xFF0C4A6E) else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
                                     "Printable layout",
                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = if (isLightTheme) Color(0xFF0369A1) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -991,8 +1005,8 @@ fun VaultArticleCard(
                                 }
                             },
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
-                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
+                            color = if (isLightTheme) Color(0xFFFEF3C7) else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                            border = if (isLightTheme) BorderStroke(1.dp, Color(0xFFD97706)) else BorderStroke(0.8.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f))
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -1001,7 +1015,7 @@ fun VaultArticleCard(
                                 Icon(
                                     Icons.Default.Description,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
+                                    tint = if (isLightTheme) Color(0xFFD97706) else MaterialTheme.colorScheme.secondary,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1010,12 +1024,12 @@ fun VaultArticleCard(
                                         "📝 Markdown",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        color = if (isLightTheme) Color(0xFF78350F) else MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         "View formatted text",
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isLightTheme) Color(0xFF92400E) else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -1030,8 +1044,8 @@ fun VaultArticleCard(
                                 onShareTxt()
                             },
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
-                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
+                            color = if (isLightTheme) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
+                            border = if (isLightTheme) BorderStroke(1.dp, Color(0xFF7C3AED)) else BorderStroke(0.8.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -1040,7 +1054,7 @@ fun VaultArticleCard(
                                 Icon(
                                     Icons.Default.Share,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.tertiary,
+                                    tint = if (isLightTheme) Color(0xFF7C3AED) else MaterialTheme.colorScheme.tertiary,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1049,12 +1063,12 @@ fun VaultArticleCard(
                                         "💬 .txt / Discord",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        color = if (isLightTheme) Color(0xFF4C1D95) else MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         "iPhone & chat friendly",
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isLightTheme) Color(0xFF5B21B6) else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -1069,8 +1083,8 @@ fun VaultArticleCard(
                                 onMoveToCollection()
                             },
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
+                            color = if (isLightTheme) Color(0xFFF1F5F9) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            border = if (isLightTheme) BorderStroke(1.dp, Color(0xFF94A3B8)) else BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -1079,7 +1093,7 @@ fun VaultArticleCard(
                                 Icon(
                                     Icons.AutoMirrored.Filled.DriveFileMove,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
+                                    tint = if (isLightTheme) Color(0xFF0284C7) else MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1088,12 +1102,12 @@ fun VaultArticleCard(
                                         "📁 Move",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        color = if (isLightTheme) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         "To collection",
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isLightTheme) Color(0xFF475569) else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -1106,8 +1120,8 @@ fun VaultArticleCard(
                         Surface(
                             onClick = onRepull,
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
-                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
+                            color = if (isLightTheme) Color(0xFFF1F5F9) else MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+                            border = if (isLightTheme) BorderStroke(1.dp, Color(0xFF94A3B8)) else BorderStroke(0.8.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1116,7 +1130,7 @@ fun VaultArticleCard(
                                 Icon(
                                     Icons.Default.Sync,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.tertiary,
+                                    tint = if (isLightTheme) Color(0xFF0F172A) else MaterialTheme.colorScheme.tertiary,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1124,7 +1138,7 @@ fun VaultArticleCard(
                                     "🔄 Pull v$nextV",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = if (isLightTheme) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurface
                                 )
                             }
                         }
@@ -1135,8 +1149,8 @@ fun VaultArticleCard(
                         Surface(
                             onClick = onRecaptureNoJs,
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
+                            color = if (isLightTheme) Color(0xFFF1F5F9) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            border = if (isLightTheme) BorderStroke(1.dp, Color(0xFF94A3B8)) else BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1145,7 +1159,7 @@ fun VaultArticleCard(
                                 Icon(
                                     Icons.Default.FlashOn,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
+                                    tint = if (isLightTheme) Color(0xFFD97706) else MaterialTheme.colorScheme.secondary,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -1153,7 +1167,7 @@ fun VaultArticleCard(
                                     "⚡ No-JS",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = if (isLightTheme) Color(0xFF0F172A) else MaterialTheme.colorScheme.onSurface
                                 )
                             }
                         }
@@ -1222,6 +1236,8 @@ fun VaultCompactRow(
         if (firstSentence.isNotBlank()) firstSentence else "Saved offline page."
     }
 
+    val isLightTheme = MaterialTheme.colorScheme.background.luminance() > 0.5f
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1238,11 +1254,12 @@ fun VaultCompactRow(
             ),
         shape = RoundedCornerShape(12.dp),
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        else if (isLightTheme) Color(0xFFFFFFFF)
         else brandColors.cardBackground,
         tonalElevation = 2.dp,
         border = BorderStroke(
-            width = if (isSelected) 2.dp else 0.8.dp,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else brandColors.borderAccent.copy(alpha = 0.5f)
+            width = if (isSelected) 2.dp else if (isLightTheme) 1.2.dp else 0.8.dp,
+            color = if (isSelected) MaterialTheme.colorScheme.primary else if (isLightTheme) brandColors.borderAccent.copy(alpha = 0.7f) else brandColors.borderAccent.copy(alpha = 0.5f)
         )
     ) {
         Row(
@@ -1279,13 +1296,14 @@ fun VaultCompactRow(
                     text = page.title,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
+                    color = if (isLightTheme) Color(0xFF0F172A) else Color(0xFFF8FAFC),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = oneSentenceSummary,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (isLightTheme) Color(0xFF334155) else Color(0xFFCBD5E1),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1703,7 +1721,7 @@ fun SettingsAndAboutDialog(
                     }
                 }
                 HorizontalDivider()
-                Text("About WebVaultr v0.8.5.2", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text("About WebVaultr v0.9", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
                     "WebVaultr is a private, local-first web preservation and on-device AI archival engine. Captures RFC-compliant MHTML snapshots, full-height screenshots, ML Kit OCR, and LiteRT edge summaries with zero cloud dependencies.",
                     style = MaterialTheme.typography.bodySmall,

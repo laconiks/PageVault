@@ -14,6 +14,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.local.webvaultr.ai.CaptureCompletenessStatus
+import com.local.webvaultr.ai.OnDeviceAiSummarizer
 import com.local.webvaultr.util.DiagnosticLogHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -153,6 +155,12 @@ class WebArchiveCaptureManager(private val context: Context) {
                     function isNoise(text) {
                         var t = text.trim();
                         if (t.length < 25) return true;
+                        if (t.indexOf('pymParent') !== -1 ||
+                            t.indexOf('datawrapper-height') !== -1 ||
+                            t.indexOf('function(') !== -1 ||
+                            t.indexOf('To continue reading, please login') !== -1) {
+                            return true;
+                        }
                         for (var i = 0; i < noiseLinePatterns.length; i++) {
                             if (noiseLinePatterns[i].test(t)) return true;
                         }
@@ -167,6 +175,12 @@ class WebArchiveCaptureManager(private val context: Context) {
                     blocks.forEach(function(b) {
                         if (b.tagName === 'P' && b.closest('blockquote')) return;
                         var txt = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim();
+                        if (txt.indexOf('pymParent') !== -1 ||
+                            txt.indexOf('datawrapper-height') !== -1 ||
+                            txt.indexOf('function(') !== -1 ||
+                            txt.indexOf('To continue reading, please login') !== -1) {
+                            return;
+                        }
                         if (!isNoise(txt) && !seen[txt]) {
                             seen[txt] = true;
                             if (b.tagName === 'H2' || b.tagName === 'H3') {
@@ -307,9 +321,60 @@ class WebArchiveCaptureManager(private val context: Context) {
                     val resolvedTitle = parsed.optString("title").ifBlank { webView.title ?: targetUrl }
                     val siteName = parsed.optString("siteName").takeIf { it.isNotBlank() }
                     val author = parsed.optString("author").takeIf { it.isNotBlank() }
+                    val rawScrollHeight = parsed.optInt("scrollHeight", 0)
+                    val summarizer = OnDeviceAiSummarizer(context)
                     var extractedText = PaywallBypassHelper.stripReversedWordGibberish(
                         PaywallBypassHelper.decodeRot1IfObfuscated(parsed.optString("bodyText").ifBlank { resolvedTitle })
                     )
+                    extractedText = summarizer.cleanExtractedProseCorpus(extractedText)
+
+                    val pCount = parsed.optString("domAudit").let { audit ->
+                        Regex("pCount=(\\d+)").find(audit)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    }
+                    val qualityStatus = summarizer.evaluateCaptureQuality(extractedText, rawScrollHeight, pCount)
+                    DiagnosticLogHelper.log("AI-Quality", "${qualityStatus.badgeLabel} ($qualityStatus) | pCount=$pCount, rawScrollHeight=$rawScrollHeight, chars=${extractedText.length}")
+
+                    if (qualityStatus != CaptureCompletenessStatus.FULL_ARCHIVE) {
+                        DiagnosticLogHelper.log(TAG, "Capture completeness is $qualityStatus; running secondary script-tag JSON scan for articleBody/content")
+                        val secondaryJsonText = withTimeoutOrNull(2500L) {
+                            evaluateJsSuspend(webView, """
+                                (function() {
+                                    try {
+                                        var foundText = '';
+                                        document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s) {
+                                            try {
+                                                var d = JSON.parse(s.textContent || '{}');
+                                                var items = Array.isArray(d) ? d : (d['@graph'] ? d['@graph'] : [d]);
+                                                items.forEach(function(item) {
+                                                    if (item && typeof item.articleBody === 'string' && item.articleBody.length > foundText.length) {
+                                                        foundText = item.articleBody;
+                                                    }
+                                                });
+                                            } catch(e) {}
+                                        });
+                                        if (!foundText && window.Fusion && window.Fusion.globalContent) {
+                                            var els = window.Fusion.globalContent.content_elements;
+                                            if (Array.isArray(els)) {
+                                                var parts = [];
+                                                els.forEach(function(el) {
+                                                    var t = (el && (el.content || el.text)) || '';
+                                                    if (typeof t === 'string' && t.trim().length > 0) parts.push(t.replace(/<[^>]*>/g, '').trim());
+                                                });
+                                                var combined = parts.join('\n\n');
+                                                if (combined.length > foundText.length) foundText = combined;
+                                            }
+                                        }
+                                        return foundText;
+                                    } catch(e) { return ''; }
+                                })();
+                            """.trimIndent())
+                        }?.trim()?.removeSurrounding("\"")?.replace("\\n", "\n")?.replace("\\\"", "\"")
+
+                        if (!secondaryJsonText.isNullOrBlank() && secondaryJsonText.length > extractedText.length + 200) {
+                            DiagnosticLogHelper.log(TAG, "Secondary JSON scan recovered deeper corpus (${secondaryJsonText.length} chars). Updating extracted text...")
+                            extractedText = summarizer.cleanExtractedProseCorpus(secondaryJsonText)
+                        }
+                    }
 
                     val domAudit = parsed.optString("domAudit")
                     if (domAudit.isNotBlank()) {
@@ -328,7 +393,6 @@ class WebArchiveCaptureManager(private val context: Context) {
 
                     // Measure true document height in physical device pixels
                     val density = context.resources.displayMetrics.density
-                    val rawScrollHeight = parsed.optInt("scrollHeight", 0)
                     val calculatedHeight = if (rawScrollHeight > 0) {
                         (rawScrollHeight * density).toInt()
                     } else {

@@ -67,7 +67,7 @@ object DiagnosticLogHelper {
             }
 
             val content = buildString {
-                appendLine("=== WebVaultr 0.8.5.2 Troubleshooting Log ===")
+                appendLine("=== WebVaultr 0.9 Troubleshooting Log ===")
                 appendLine("Device Make: ${Build.MANUFACTURER}")
                 appendLine("Device Model: ${Build.MODEL}")
                 appendLine("Android API Level: ${Build.VERSION.SDK_INT}")
